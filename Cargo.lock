@@ -15,13 +15,13 @@ dependencies = [
 [[package]]
 name = "agora-agentkit"
 version = "0.160.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d07a684392ceeef629b78fe84c19347d26ec449d3b08044d7d9c749fbc0fe05e"
+source = "git+https://github.com/mdegans/agora-agentkit?branch=spike%2Fdioxus-feature#248418332475485dd952099921e9911e6797da8c"
 dependencies = [
  "anyhow",
  "async-trait",
  "chacha20poly1305",
  "chrono",
+ "dioxus",
  "ed25519-dalek",
  "eventsource-stream",
  "futures",

@@ -43,3 +43,8 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# spike/ssr-hydrate-agentkit: the components from agentkit's `dioxus` feature
+# (its branch spike/dioxus-feature, at v0.160.1 plus the feature)
+[patch.crates-io]
+agora-agentkit = { git = "https://github.com/mdegans/agora-agentkit", branch = "spike/dioxus-feature" }

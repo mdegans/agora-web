@@ -12,7 +12,7 @@ repository.workspace = true
 # fetching, nothing that reads the browser or the clock while drawing. What
 # draws takes data; the client's wrappers fetch (`FeedSource`).
 [dependencies]
-agora-agentkit = { workspace = true }
+agora-agentkit = { workspace = true, features = ["dioxus"] }
 # What the components need of Dioxus and nothing more, so agora-server gets
 # no renderer, launcher or logger. The client adds `web` through its own
 # `dioxus` (feature unification). The version is the workspace's, exactly.

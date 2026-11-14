@@ -120,6 +120,12 @@ struct BuildStatus {
 #[derive(Clone)]
 struct AppState {
     upstream: Url,
+    /// Whether cookies and `Authorization` cross the proxy: only to an
+    /// upstream on this machine. Browsers don't separate cookies by port, so
+    /// to a remote upstream (production) they would carry every local app's
+    /// cookies out, and bring production's session cookie back into the
+    /// jar every localhost port shares.
+    credentials: bool,
     http: reqwest::Client,
     bundle: Arc<PathBuf>,
     status: watch::Receiver<BuildStatus>,
@@ -160,6 +166,7 @@ fn main() {
     });
 
     let state = AppState {
+        credentials: is_loopback(&config.upstream),
         upstream: config.upstream.clone(),
         http: upstream_client(),
         bundle: Arc::new(bundle),
@@ -202,7 +209,54 @@ fn app(state: AppState) -> Router {
         .route(RELOAD_SCRIPT, get(reload_script))
         .route(EVENTS, get(events))
         .fallback(proxy)
+        .layer(axum::middleware::from_fn(local_host_only))
         .with_state(state)
+}
+
+/// Whether `url`'s host is this machine
+fn is_loopback(url: &Url) -> bool {
+    url.host().is_some_and(|host| is_loopback_host(&host))
+}
+
+fn is_loopback_host<S: AsRef<str>>(host: &url::Host<S>) -> bool {
+    match host {
+        url::Host::Domain(domain) => domain.as_ref() == "localhost",
+        url::Host::Ipv4(ip) => ip.is_loopback(),
+        url::Host::Ipv6(ip) => ip.is_loopback(),
+    }
+}
+
+/// Whether a `Host` header (`name[:port]`, `[v6]:port`) names this machine
+fn is_loopback_host_header(host: &str) -> bool {
+    let name = match host.strip_prefix('[') {
+        Some(v6) => v6.split_once(']').map(|(ip, _)| ip),
+        None => Some(host.rsplit_once(':').map_or(host, |(name, _)| name)),
+    };
+    name.and_then(|name| match name.parse::<std::net::Ipv6Addr>() {
+        Ok(ip) => Some(url::Host::Ipv6(ip)),
+        Err(_) => url::Host::parse(name).ok(),
+    })
+    .is_some_and(|host| is_loopback_host(&host))
+}
+
+/// Refuses a request whose `Host` isn't this machine: a page elsewhere
+/// that rebinds its own name to 127.0.0.1 (DNS rebinding) can't use the
+/// proxy to reach the upstream from here
+async fn local_host_only(request: Request, next: axum::middleware::Next) -> Response {
+    let local = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|host| host.to_str().ok())
+        .is_some_and(is_loopback_host_header);
+    if local {
+        next.run(request).await
+    } else {
+        (
+            StatusCode::FORBIDDEN,
+            "agora-web dev server: local hosts only\n",
+        )
+            .into_response()
+    }
 }
 
 // -- Watching and building --
@@ -300,7 +354,8 @@ impl Watcher {
 /// A hash of every file's path, size and mtime under `paths`
 fn fingerprint(paths: &[PathBuf]) -> u64 {
     fn walk(path: &FsPath, hasher: &mut DefaultHasher) {
-        let Ok(meta) = fs::metadata(path) else {
+        // The link itself, never its target: no symlink loops
+        let Ok(meta) = fs::symlink_metadata(path) else {
             return;
         };
         if meta.is_dir() {
@@ -310,6 +365,11 @@ fn fingerprint(paths: &[PathBuf]) -> u64 {
             let mut entries: Vec<PathBuf> = entries.flatten().map(|e| e.path()).collect();
             entries.sort();
             for entry in entries {
+                // Editors' swap and backup files aren't sources
+                let name = entry.file_name().unwrap_or_default().to_string_lossy();
+                if name.starts_with('.') || name.ends_with('~') {
+                    continue;
+                }
                 walk(&entry, hasher);
             }
         } else {
@@ -328,7 +388,10 @@ fn fingerprint(paths: &[PathBuf]) -> u64 {
 // -- Routes --
 
 /// `GET /agora/app`: the upstream's page and CSP, plus the reload script
-async fn page(State(state): State<AppState>, headers: HeaderMap) -> Response {
+async fn page(State(state): State<AppState>, mut headers: HeaderMap) -> Response {
+    // The page is rewritten here, so always a whole one: never a 304
+    headers.remove(header::IF_NONE_MATCH);
+    headers.remove(header::IF_MODIFIED_SINCE);
     let url = match upstream_url(&state.upstream, APP_PAGE) {
         Ok(url) => url,
         Err(response) => return response,
@@ -352,9 +415,12 @@ async fn page(State(state): State<AppState>, headers: HeaderMap) -> Response {
         Ok(html) => html,
         Err(e) => return bad_gateway(&format!("reading the upstream's page: {e}")),
     };
-    if !status.is_success() || !html.contains(MOUNT) {
+    if !status.is_success() {
+        return bad_gateway(&format!("the upstream's /agora/app answered {status}"));
+    }
+    if !html.contains(MOUNT) {
         return bad_gateway(&format!(
-            "the upstream's /agora/app ({status}) has no <div {MOUNT}> to mount \
+            "the upstream's /agora/app has no <div {MOUNT}> to mount \
              into. A local agora-server built without the client serves a \
              placeholder there: run `just web-build` in agora and rebuild the \
              server (any build will do; the assets come from here)."
@@ -472,7 +538,7 @@ async fn proxy(State(state): State<AppState>, request: Request) -> Response {
         Err(response) => return response,
     };
     let status = upstream.status();
-    let headers = response_headers(upstream.headers(), &state.upstream);
+    let headers = response_headers(upstream.headers(), &state.upstream, state.credentials);
     match upstream.bytes().await {
         Ok(bytes) => (status, headers, bytes).into_response(),
         Err(e) => bad_gateway(&format!("reading the upstream's answer: {e}")),
@@ -500,8 +566,12 @@ async fn send(
     body: Bytes,
 ) -> Result<reqwest::Response, Response> {
     let mut forwarded = HeaderMap::new();
+    let connection = connection_headers(headers);
     for (name, value) in headers {
         if !is_hop_by_hop(name)
+            && !connection.contains(name)
+            && (state.credentials
+                || (*name != header::COOKIE && *name != header::AUTHORIZATION))
             && *name != header::HOST
             && *name != header::CONTENT_LENGTH
             // The body comes back as sent; this server doesn't decode it
@@ -522,10 +592,14 @@ async fn send(
 
 /// The upstream's response headers, less those about its own connection,
 /// with its absolute redirects made relative so the browser stays here
-fn response_headers(headers: &HeaderMap, upstream: &Url) -> HeaderMap {
+/// (and `Set-Cookie` only when `credentials`)
+fn response_headers(headers: &HeaderMap, upstream: &Url, credentials: bool) -> HeaderMap {
     let mut out = HeaderMap::new();
+    let connection = connection_headers(headers);
     for (name, value) in headers {
         if is_hop_by_hop(name)
+            || connection.contains(name)
+            || (!credentials && *name == header::SET_COOKIE)
             || *name == header::CONTENT_LENGTH
             // Over plain http on 127.0.0.1 it means nothing, and is unwanted
             || *name == header::STRICT_TRANSPORT_SECURITY
@@ -540,12 +614,7 @@ fn response_headers(headers: &HeaderMap, upstream: &Url) -> HeaderMap {
                 .and_then(|location| Url::parse(location).ok())
                 .filter(|location| location.origin() == upstream.origin())
                 .and_then(|location| {
-                    let mut local = location.path().to_owned();
-                    if let Some(query) = location.query() {
-                        local.push('?');
-                        local.push_str(query);
-                    }
-                    HeaderValue::from_str(&local).ok()
+                    HeaderValue::from_str(&location[url::Position::BeforePath..]).ok()
                 })
         {
             value = local;
@@ -553,6 +622,17 @@ fn response_headers(headers: &HeaderMap, upstream: &Url) -> HeaderMap {
         out.append(name.clone(), value);
     }
     out
+}
+
+/// The headers a `Connection` header names, which are hop-by-hop too
+fn connection_headers(headers: &HeaderMap) -> Vec<HeaderName> {
+    headers
+        .get_all(header::CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|name| HeaderName::try_from(name.trim()).ok())
+        .collect()
 }
 
 fn is_hop_by_hop(name: &HeaderName) -> bool {

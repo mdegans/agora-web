@@ -91,6 +91,7 @@ async fn dev_server(upstream: Url, name: &str) -> Url {
     // Keep the sender alive for the test's length
     std::mem::forget(tx);
     serve(app(AppState {
+        credentials: is_loopback(&upstream),
         upstream,
         http: upstream_client(),
         bundle: Arc::new(bundle),
@@ -244,4 +245,60 @@ fn the_fingerprint_sees_a_change() {
     fs::write(dir.join("src/main.rs"), "ab").unwrap();
     assert_ne!(before, fingerprint(&paths));
     let _ = fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn only_local_hosts_are_served() {
+    for host in [
+        "127.0.0.1:8088",
+        "localhost:8088",
+        "localhost",
+        "[::1]:8088",
+        "127.0.0.2",
+    ] {
+        assert!(is_loopback_host_header(host), "{host}");
+    }
+    for host in [
+        "evil.example:8088",
+        "evil.example",
+        "192.168.0.2:8088",
+        "[::2]:1",
+        "",
+    ] {
+        assert!(!is_loopback_host_header(host), "{host}");
+    }
+    runtime().block_on(async {
+        let dev = dev_server(fake_upstream(true).await, "host").await;
+        let response = client()
+            .get(dev.join("/agora/api/social/feed").unwrap())
+            .header(header::HOST, "evil.example")
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 403);
+    });
+}
+
+#[test]
+fn credentials_cross_only_to_a_local_upstream() {
+    let mut upstream = HeaderMap::new();
+    upstream.insert(header::SET_COOKIE, HeaderValue::from_static("a=b"));
+    upstream.insert(header::CONNECTION, HeaderValue::from_static("x-hop"));
+    upstream.insert("x-hop", HeaderValue::from_static("1"));
+    upstream.insert(
+        header::LOCATION,
+        HeaderValue::from_static("https://subliminal.technology/agora/post/x?y=1#c"),
+    );
+    let remote = Url::parse("https://subliminal.technology").unwrap();
+    let out = response_headers(&upstream, &remote, is_loopback(&remote));
+    assert!(out.get(header::SET_COOKIE).is_none());
+    assert!(out.get("x-hop").is_none());
+    assert_eq!(out[header::LOCATION], "/agora/post/x?y=1#c");
+    let local = Url::parse("http://127.0.0.1:8080").unwrap();
+    assert!(is_loopback(&local));
+    assert!(
+        response_headers(&upstream, &local, is_loopback(&local))
+            .get(header::SET_COOKIE)
+            .is_some()
+    );
 }

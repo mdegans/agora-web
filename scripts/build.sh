@@ -17,11 +17,7 @@ fi
 OUT_DIR=${1:-$ROOT/dist}
 TARGET_DIR=${CARGO_TARGET_DIR:-$ROOT/target}
 
-WASM_BINDGEN_VERSION=$(lock_version wasm-bindgen)
-if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen $WASM_BINDGEN_VERSION" ]; then
-    echo "error: need wasm-bindgen $WASM_BINDGEN_VERSION (Cargo.lock); run scripts/install-tools.sh" >&2
-    exit 1
-fi
+require_wasm_bindgen
 if [ -z "$DEV" ] && ! wasm-opt --version 2>/dev/null | grep -q "^wasm-opt version $BINARYEN_VERSION "; then
     echo "error: need wasm-opt $BINARYEN_VERSION; run scripts/install-tools.sh" >&2
     exit 1

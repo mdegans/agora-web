@@ -19,7 +19,11 @@ repository = "https://github.com/mdegans/agora-web"
 # so the client and the server always share one agentkit (the wire types).
 # Bump it here in the same change as agora's.
 agora-agentkit = { version = "0.160.0" }
-dioxus = { version = "0.7", features = ["web"] }
+# Dioxus's defaults less `devtools`: in a debug build (scripts/dev.sh's)
+# dioxus-web would open a websocket to `/_dioxus` for `dx serve`, which
+# isn't used here (dx needs OpenSSL), and retry it forever. Release builds
+# never compiled it in (it is gated on debug assertions).
+dioxus = { version = "0.7", default-features = false, features = ["web", "launch", "logger", "lib"] }
 
 [profile.release]
 # Size over speed: this ships to browsers. wasm-opt shrinks it further.

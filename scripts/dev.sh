@@ -11,11 +11,7 @@ set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 . "$ROOT/scripts/tools.sh"
 
-WASM_BINDGEN_VERSION=$(lock_version wasm-bindgen)
-if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen $WASM_BINDGEN_VERSION" ]; then
-    echo "error: need wasm-bindgen $WASM_BINDGEN_VERSION (Cargo.lock); run scripts/install-tools.sh" >&2
-    exit 1
-fi
+require_wasm_bindgen
 
 cd "$ROOT"
 exec cargo run --locked --quiet -p agora-web-dev -- "$@"

@@ -105,9 +105,14 @@ What it serves:
   plain pages the client links to) is proxied to the upstream.
 
 The default upstream is production, `https://subliminal.technology`: the
-client reads real data through the public API. Treat it as read-only:
-the proxy passes requests on as they come, but don't sign in or write
-through it. Signed-in work (step 4c) wants a local server.
+client reads real data through the public API, read-only. To a remote
+upstream the proxy passes no cookies or `Authorization` and returns no
+`Set-Cookie` (browsers share cookies across every localhost port), so
+signing in through it doesn't work, by design; signed-in work (step 4c)
+wants a local upstream, where they pass. The dev server answers only
+requests addressed to `127.0.0.1` or `localhost`, and buffers each answer
+whole, so a streaming endpoint (SSE) through the proxy hangs until its
+60-second timeout.
 
 ### From the Mac (VS Code Remote-SSH)
 

@@ -1,0 +1,18 @@
+[package]
+name = "agora-web-dev"
+version = "0.1.0"
+description = "scripts/dev.sh's server: rebuilds the client on change, serves it under the upstream's own app page, and proxies the rest"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# A native tool, never part of the wasm build (scripts/build.sh builds
+# `-p agora-web` only). Every crate here is already in agora's Cargo.lock.
+[dependencies]
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio"] }
+futures-util = { version = "0.3", default-features = false }
+# rustls only (no default features: no native-tls, no OpenSSL)
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "time", "fs"] }
+url = "2"

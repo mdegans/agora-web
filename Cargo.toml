@@ -2,6 +2,8 @@
 resolver = "3"
 members = [
     "crates/agora-web",
+    # scripts/dev.sh's server (native; not part of the wasm build)
+    "crates/dev-server",
     # Guard: fails resolution if openssl-sys enters the graph (rustls only).
     "crates/no-openssl",
 ]

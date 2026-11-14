@@ -13,7 +13,8 @@ env:
 
 jobs:
   # One job, so one required status check: formatting, lints (native and
-  # wasm32), tests, and the release build agora's Docker stage runs.
+  # wasm32), tests (the dev server's included), the dev bundle scripts/dev.sh
+  # serves, and the release build agora's Docker stage runs.
   check:
     runs-on: ubuntu-latest
     steps:
@@ -66,6 +67,9 @@ jobs:
         run: |
           scripts/install-tools.sh "$HOME/.local/bin"
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Dev build
+        run: scripts/build.sh --dev target/dev-dist
 
       - name: Release build
         run: scripts/build.sh dist

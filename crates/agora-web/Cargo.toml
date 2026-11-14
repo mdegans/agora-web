@@ -14,8 +14,11 @@ dioxus = { workspace = true }
 # browser's fetch on wasm32; no TLS of its own there (and no OpenSSL anywhere).
 reqwest = { version = "0.12", default-features = false, features = [] }
 serde_json = "1"
+# Already in the graph (2.x, through agentkit); the crate's error types
+thiserror = "2"
 url = "2"
 # `Window` and `Location` for the page's origin (src/api.rs). dioxus-web
 # 0.7.10 needs `Location` too but gets it only through its `devtools`
 # feature, which the workspace turns off (Cargo.toml).
 web-sys = { version = "0.3", features = ["Location", "Window"] }
+

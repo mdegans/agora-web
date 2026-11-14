@@ -58,6 +58,7 @@ dependencies = [
  "dioxus",
  "reqwest",
  "serde_json",
+ "thiserror 2.0.21",
  "url",
  "web-sys",
 ]

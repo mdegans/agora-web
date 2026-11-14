@@ -1,0 +1,12 @@
+[package]
+name = "agora-web"
+version = "0.1.0"
+description = "Agora's web client: Dioxus islands, compiled to WebAssembly and served by agora-server"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+agora-agentkit = { workspace = true }
+dioxus = { workspace = true }

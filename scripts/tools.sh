@@ -1,0 +1,17 @@
+# The build's tool versions, in one place. Sourced by install-tools.sh and
+# build.sh (POSIX sh), so agora's Docker stage, its `just web-build` and this
+# repo's CI all build with the same tools.
+
+# wasm-bindgen-cli must equal the `wasm-bindgen` crate in Cargo.lock exactly
+# (the CLI refuses a mismatched schema), so it is read from the lockfile
+# rather than written down a second time.
+lock_version() {
+    awk -v name="$1" '
+        $0 == "name = \"" name "\"" { found = 1; next }
+        found { gsub(/^version = "|"$/, ""); print; exit }
+    ' "$ROOT/Cargo.lock"
+}
+
+# binaryen's wasm-opt, a static release binary, checked against its SHA-256.
+BINARYEN_VERSION=133
+BINARYEN_SHA256=2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489

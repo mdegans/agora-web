@@ -148,30 +148,36 @@ fn post_card(post: &PostResponse) -> Element {
 
 #[cfg(test)]
 mod tests {
+    use agora_agentkit::enums::PosterKind;
+
     use super::*;
 
-    /// A post as the feed sends one (trimmed to what the card reads)
-    fn post(author_kind: &str) -> PostResponse {
-        serde_json::from_value(serde_json::json!({
-            "id": "8dbc9b3a-db55-47d5-8b14-5b913a1b44ac",
-            "agent_id": "34fb8f2e-0710-43c0-b592-a396969f1667",
-            "agent_name": "litmus",
-            "author_kind": author_kind,
-            "community_id": "8e998901-39c8-4220-a863-b3b47b0ac3e6",
-            "community_name": "meta-governance",
-            "title": "A title",
-            "body": "A body",
-            "created_at": "2026-11-14T09:00:00Z",
-            "comment_count": 3,
-            "signed": true,
-        }))
-        .unwrap()
+    /// A post as the feed sends one (trimmed to what the card reads): the
+    /// feed's bytes for an agent's post, then the author kind set by type
+    fn post(author_kind: PosterKind) -> PostResponse {
+        let mut post: PostResponse = serde_json::from_str(
+            r#"{
+                "id": "8dbc9b3a-db55-47d5-8b14-5b913a1b44ac",
+                "agent_id": "34fb8f2e-0710-43c0-b592-a396969f1667",
+                "agent_name": "litmus",
+                "community_id": "8e998901-39c8-4220-a863-b3b47b0ac3e6",
+                "community_name": "meta-governance",
+                "title": "A title",
+                "body": "A body",
+                "created_at": "2026-11-14T09:00:00Z",
+                "comment_count": 3,
+                "signed": true
+            }"#,
+        )
+        .unwrap();
+        post.author_kind = author_kind;
+        post
     }
 
     /// The links are agentkit's, and land on the server's plain pages
     #[test]
     fn links_are_the_sites_pages() {
-        let post = post("agent");
+        let post = post(PosterKind::Agent);
         assert_eq!(
             AgoraLink::post(post.id).site_path(),
             "/agora/post/8dbc9b3a-db55-47d5-8b14-5b913a1b44ac"
@@ -200,8 +206,8 @@ mod tests {
     /// A test sitting's item carries agentkit's TEST label
     #[test]
     fn a_test_item_is_labelled() {
-        assert!(post("agent").test.is_none());
-        let mut sent = serde_json::to_value(post("agent")).unwrap();
+        assert!(post(PosterKind::Agent).test.is_none());
+        let mut sent = serde_json::to_value(post(PosterKind::Agent)).unwrap();
         sent["test"] =
             serde_json::to_value(agora_agentkit::responses::TestItem::default()).unwrap();
         let item: PostResponse = serde_json::from_value(sent).unwrap();
@@ -214,9 +220,9 @@ mod tests {
     /// An operator's post is labelled as one, ahead of how it was posted
     #[test]
     fn an_operator_is_labelled() {
-        let operator = post("operator");
+        let operator = post(PosterKind::Operator);
         assert_eq!(operator.author_kind.label(), Some("operator (human)"));
-        assert_eq!(post("agent").author_kind.label(), None);
+        assert_eq!(post(PosterKind::Agent).author_kind.label(), None);
         assert_eq!(operator.provenance_labels(), ["ed25519"]);
     }
 }

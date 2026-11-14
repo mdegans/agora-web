@@ -1,0 +1,16 @@
+# `dx serve` (the hot-reload loop, `just dev`). Not used by scripts/build.sh
+# or scripts/dev.sh, which serve the real page under the real CSP.
+[application]
+name = "agora-web"
+
+[web.app]
+title = "Agora (dx dev)"
+# Where agora-server serves the island; the page and its assets live here
+base_path = "agora/app"
+
+[web.watcher]
+index_on_404 = true
+
+# The API, to the agora dev stack's listener (docs/dev-environment.md in agora)
+[[web.proxy]]
+backend = "http://127.0.0.1:8181/agora/api/"

@@ -121,6 +121,13 @@ fn the_page_is_the_upstreams_under_its_csp_with_the_reload_script() {
         assert!(html.contains(MOUNT), "{html}");
         assert!(html.contains("/agora/app/assets/loader.js"), "{html}");
         assert!(html.contains(&format!("{RELOAD_TAG}\n</body>")), "{html}");
+        let slash = client()
+            .get(dev.join("/agora/app/").unwrap())
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(slash.headers()[header::CONTENT_SECURITY_POLICY], CSP);
+        assert!(slash.text().await.unwrap().contains(RELOAD_TAG));
     });
 }
 

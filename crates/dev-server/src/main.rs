@@ -196,6 +196,8 @@ fn upstream_client() -> reqwest::Client {
 fn app(state: AppState) -> Router {
     Router::new()
         .route(APP_PAGE, get(page))
+        // agora-server serves the page at both
+        .route("/agora/app/", get(page))
         .route("/agora/app/assets/{*path}", get(asset))
         .route(RELOAD_SCRIPT, get(reload_script))
         .route(EVENTS, get(events))

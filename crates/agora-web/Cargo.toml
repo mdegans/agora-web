@@ -13,6 +13,9 @@ dioxus = { workspace = true }
 # All already in the graph through agentkit and dioxus-web. reqwest uses the
 # browser's fetch on wasm32; no TLS of its own there (and no OpenSSL anywhere).
 reqwest = { version = "0.12", default-features = false, features = [] }
+# Already in the graph (agentkit); `DeserializeOwned` and `Serialize` for the
+# generic requests (src/api.rs)
+serde = "1"
 serde_json = "1"
 # Already in the graph (2.x, through agentkit); the crate's error types
 thiserror = "2"

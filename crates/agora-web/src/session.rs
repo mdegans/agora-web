@@ -49,7 +49,7 @@ use agora_agentkit::{
 use dioxus::prelude::*;
 use url::{Position, Url};
 
-use crate::api::{self, ApiError};
+use crate::api::{self, ApiError, BanInfoExt};
 
 /// The server's sign-in page (agora-server `operator::session::login_url`),
 /// which returns to `next` after signing in
@@ -435,7 +435,7 @@ fn signed_in_line(signed_in: &SignedIn) -> Element {
             "Signed in as {operator}"
             match (signed_in.suspension(), poster) {
                 (Some(ban), _) => rsx! {
-                    ". {api::suspension_line(ban)}. "
+                    ". {ban.human_summary()}. "
                     a { href: "{ban.appeal_url}", "How to appeal" }
                 },
                 (None, None) => rsx! { ". You have no operator poster yet, so you can't post here." },
@@ -462,26 +462,21 @@ mod tests {
     /// A token that must never be drawn or printed
     const TOKEN: &str = "csrf-0f1e2d3c4b5a";
 
-    /// The bootstrap as agora-server sends it: the shape its
-    /// `portal_api::tests::the_bootstrap_names_the_operator_its_token_and_its_poster`
-    /// asserts and agentkit's `portal_session_wire` round-trips. There is no
-    /// on-disk wire snapshot of it in agora (`snapshots/` holds the OpenAPI
-    /// spec and the MCP tools), so the JSON is written out here.
+    /// The bootstrap, as a typed value: agora-server builds this agentkit
+    /// struct and serde writes it. Its bytes are tested once, in
+    /// [`the_bootstrap_decodes`].
     fn bootstrap_with(poster: bool, token: &str) -> PortalSessionResponse {
-        let mut json = serde_json::json!({
-            "operator": {
-                "id": "34fb8f2e-0710-43c0-b592-a396969f1667",
-                "display_name": "mdegans",
+        PortalSessionResponse {
+            operator: OperatorRef {
+                id: "34fb8f2e-0710-43c0-b592-a396969f1667".parse().unwrap(),
+                display_name: "mdegans".into(),
             },
-            "csrf_token": token,
-        });
-        if poster {
-            json["poster"] = serde_json::json!({
-                "id": "8dbc9b3a-db55-47d5-8b14-5b913a1b44ac",
-                "name": "steward",
-            });
+            csrf_token: CsrfToken(token.into()),
+            poster: poster.then(|| AgentRef {
+                id: "8dbc9b3a-db55-47d5-8b14-5b913a1b44ac".parse().unwrap(),
+                name: "steward".parse().unwrap(),
+            }),
         }
-        serde_json::from_value(json).unwrap()
     }
 
     fn bootstrap(poster: bool) -> PortalSessionResponse {
@@ -501,9 +496,7 @@ mod tests {
     }
 
     fn banned() -> ApiError {
-        ApiError::Forbidden(ApiErrorBody::Suspended(Box::new(
-            serde_json::from_str(&crate::api::tests::ban_body()).unwrap(),
-        )))
+        crate::api::tests::ban().into()
     }
 
     fn plain_403() -> ApiError {
@@ -512,31 +505,60 @@ mod tests {
         }))
     }
 
+    /// A `Decode`, as reading a body this client can't makes one
+    fn decode_error() -> ApiError {
+        serde_json::from_str::<PortalSessionResponse>("{}")
+            .unwrap_err()
+            .into()
+    }
+
     /// Whether `session` is signed in and may try a write
     fn can_write(session: &Session) -> bool {
         matches!(session, Session::SignedIn(s) if s.can_write())
     }
 
+    /// The bootstrap's bytes, as agora-server sends them: the shape its
+    /// `portal_api::tests::the_bootstrap_names_the_operator_its_token_and_its_poster`
+    /// asserts and agentkit's `portal_session_wire` round-trips (agora has
+    /// no on-disk wire snapshot of it: `snapshots/` holds the OpenAPI spec
+    /// and the MCP tools). With a poster and without one, `poster` absent.
     #[test]
     fn the_bootstrap_decodes() {
-        let with = bootstrap(true);
-        assert_eq!(with.operator.display_name, "mdegans");
+        let with: PortalSessionResponse = serde_json::from_str(
+            r#"{
+                "operator": {
+                    "id": "34fb8f2e-0710-43c0-b592-a396969f1667",
+                    "display_name": "mdegans"
+                },
+                "csrf_token": "csrf-0f1e2d3c4b5a",
+                "poster": {"id": "8dbc9b3a-db55-47d5-8b14-5b913a1b44ac", "name": "steward"}
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(with, bootstrap(true));
         assert_eq!(
             with.operator.id,
             "34fb8f2e-0710-43c0-b592-a396969f1667"
                 .parse::<OperatorId>()
                 .unwrap()
         );
-        assert_eq!(with.csrf_token, CsrfToken(TOKEN.into()));
-        let poster = with.poster.unwrap();
-        assert_eq!(poster.name.as_str(), "steward");
         assert_eq!(
-            poster.id,
+            with.poster.unwrap().id,
             "8dbc9b3a-db55-47d5-8b14-5b913a1b44ac"
                 .parse::<AgentId>()
                 .unwrap()
         );
-        assert_eq!(bootstrap(false).poster, None);
+        let without: PortalSessionResponse = serde_json::from_str(
+            r#"{
+                "operator": {
+                    "id": "34fb8f2e-0710-43c0-b592-a396969f1667",
+                    "display_name": "mdegans"
+                },
+                "csrf_token": "csrf-0f1e2d3c4b5a"
+            }"#,
+        )
+        .unwrap();
+        assert_eq!(without, bootstrap(false));
     }
 
     #[test]
@@ -554,7 +576,7 @@ mod tests {
         );
         for e in [
             ApiError::Network("offline".into()),
-            ApiError::Decode("missing field".into()),
+            decode_error(),
             ApiError::Status {
                 status: 502,
                 message: "no message".into(),
@@ -679,7 +701,7 @@ mod tests {
     fn other_refusals_leave_the_session() {
         for e in [
             ApiError::Network("offline".into()),
-            ApiError::Decode("x".into()),
+            decode_error(),
             ApiError::Status {
                 status: 400,
                 message: "unknown field `x`".into(),

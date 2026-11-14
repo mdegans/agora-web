@@ -1,0 +1,6 @@
+disallowed-macros = [
+    # JSON is built from agentkit's typed values (or, where the server's
+    # exact bytes are the point, a raw string): a hand-written `json!` shape
+    # can drift from the wire type without anything noticing.
+    { path = "serde_json::json", reason = "build JSON from agentkit's typed values, or a raw string fixture where the server's exact bytes are the point" },
+]

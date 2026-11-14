@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # One job, so one required status check: formatting, lints (native and
+  # wasm32), tests, and the release build agora's Docker stage runs.
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain
+        run: |
+          rustup toolchain install stable --profile minimal \
+            --component rustfmt,clippy --target wasm32-unknown-unknown
+          rustup default stable
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/.local/bin
+            ~/.cargo/bin/wasm-bindgen
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'scripts/tools.sh') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy (native)
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      - name: Clippy (wasm32)
+        run: cargo clippy --locked -p agora-web --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Test
+        run: cargo test --locked --workspace
+
+      - name: Install wasm-bindgen and wasm-opt
+        run: |
+          scripts/install-tools.sh "$HOME/.local/bin"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Release build
+        run: scripts/build.sh dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist

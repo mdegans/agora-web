@@ -1,0 +1,27 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/agora-web",
+    # Guard: fails resolution if openssl-sys enters the graph (rustls only).
+    "crates/no-openssl",
+]
+
+[workspace.package]
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/mdegans/agora-web"
+
+[workspace.dependencies]
+# Must read exactly as agora's own `[workspace.dependencies]` entry does:
+# agora-server's build.rs compares the two requirements as literal strings,
+# so the client and the server always share one agentkit (the wire types).
+# Bump it here in the same change as agora's.
+agora-agentkit = { version = "0.160.0" }
+dioxus = { version = "0.7", features = ["web"] }
+
+[profile.release]
+# Size over speed: this ships to browsers. wasm-opt shrinks it further.
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

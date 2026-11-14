@@ -45,8 +45,12 @@ for both the host and `--target wasm32-unknown-unknown` in CI.
 To see it in a browser, run it inside agora: `just web-build` there builds
 this checkout into the server's embed directory, and the server serves the
 island at `/agora/app/`. The page's Content-Security-Policy is
-`script-src 'self' 'wasm-unsafe-eval'`, so anything that needs JavaScript
-`eval` (Dioxus's `document::eval`, for one) is refused there.
+`script-src 'self' 'wasm-unsafe-eval'`, with no `'unsafe-eval'`, so anything
+that runs JavaScript through `eval` or `new Function` is refused there. In
+dioxus-web 0.7 that is `document::eval` and `document::Title` (which sets the
+title through it). A `document::Script` with inline contents is refused too;
+`Meta`, `Link`, `Stylesheet` and `Style` work (they build DOM elements, and
+the page allows inline styles).
 
 ## How agora embeds it
 

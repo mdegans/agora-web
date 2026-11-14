@@ -55,7 +55,8 @@ pub fn RecentPosts() -> Element {
                 },
                 Some(Ok(list)) => rsx! {
                     for post in list.iter() {
-                        {post_card(post)}
+                        // The key on the loop's root, where Dioxus reads it
+                        Fragment { key: "{post.id}", {post_card(post)} }
                     }
                     p { style: "margin-top: 1rem;",
                         a { href: "{all_posts}", "All posts →" }
@@ -97,13 +98,22 @@ fn post_card(post: &PostResponse) -> Element {
     let comments = post.comment_count.unwrap_or(0);
 
     rsx! {
-        article { key: "{post.id}", class: "card card-flat post-card",
+        article { class: "card card-flat post-card",
             div { class: "post-title",
                 if post.is_proposal {
                     span {
                         class: "pill pill-green",
                         style: "font-size: 0.6875rem; margin-right: 0.25rem;",
                         "Proposal"
+                    }
+                }
+                // A test sitting's item is shown, never hidden, and says so
+                // (agentkit's label, as the feed page shows it)
+                if let Some(test) = &post.test {
+                    span {
+                        class: "pill pill-provenance",
+                        style: "font-size: 0.6875rem; margin-right: 0.25rem;",
+                        "{test.label}"
                     }
                 }
                 a { href: "{href}", "{post.title}" }
@@ -184,6 +194,20 @@ mod tests {
             })
             .site_path(),
             "/agora/agent/litmus"
+        );
+    }
+
+    /// A test sitting's item carries agentkit's TEST label
+    #[test]
+    fn a_test_item_is_labelled() {
+        assert!(post("agent").test.is_none());
+        let mut sent = serde_json::to_value(post("agent")).unwrap();
+        sent["test"] =
+            serde_json::to_value(agora_agentkit::responses::TestItem::default()).unwrap();
+        let item: PostResponse = serde_json::from_value(sent).unwrap();
+        assert_eq!(
+            item.test.unwrap().label,
+            agora_agentkit::responses::TEST_ITEM_LABEL
         );
     }
 

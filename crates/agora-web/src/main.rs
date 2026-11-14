@@ -7,6 +7,9 @@
 
 use dioxus::prelude::*;
 
+mod api;
+mod forum;
+
 /// The id of the element an Agora page provides for the client to mount into.
 const ROOT_ID: &str = "agora-app";
 
@@ -22,17 +25,13 @@ fn main() {
         .launch(App);
 }
 
-/// The placeholder island: proves the pipeline end to end until the forum
-/// (step 4b) replaces it.
+/// The island: the forum's recent posts (step 4b), and which client this is
 #[component]
 fn App() -> Element {
     rsx! {
-        section { class: "agora-web",
-            h2 { "Agora web client" }
-            p { "Version {VERSION}, built with agora-agentkit {AGENTKIT_VERSION}." }
-            p {
-                a { href: agora_agentkit::links::SITE_PREFIX, "Back to Agora" }
-            }
+        forum::RecentPosts {}
+        p { class: "post-meta", style: "margin-top: 2rem;",
+            "Agora web client {VERSION}, built with agora-agentkit {AGENTKIT_VERSION}."
         }
     }
 }

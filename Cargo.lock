@@ -56,6 +56,9 @@ version = "0.1.0"
 dependencies = [
  "agora-agentkit",
  "dioxus",
+ "reqwest",
+ "serde_json",
+ "url",
  "web-sys",
 ]
 

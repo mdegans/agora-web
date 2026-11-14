@@ -12,14 +12,17 @@ documented API (`/agora/api/docs`), using
 and server agree on the wire by construction. There are no Dioxus fullstack
 server functions.
 
-Today it is a placeholder island that proves the pipeline end to end; the
-forum comes next.
+Today the island shows the forum's recent posts (plan step 4b, "forum
+first"), from `GET /agora/api/social/feed`, each linking to the post's
+server-rendered page; the rest of the forum comes next.
 
 ## Layout
 
-- `crates/agora-web`: the client (a Dioxus web app). `assets/loader.js`
-  starts it; pages load it as a file, because Agora's CSP allows no inline
-  scripts.
+- `crates/agora-web`: the client (a Dioxus web app). `src/api.rs` reads
+  the API with agentkit's types (same-origin, as the page's
+  `connect-src 'self'` requires); `src/forum.rs` is the forum.
+  `assets/loader.js` starts it; pages load it as a file, because Agora's
+  CSP allows no inline scripts.
 - `crates/no-openssl`: a guard, not a library. It declares
   `links = "openssl"`, so if anything pulls `openssl-sys` into the graph,
   every cargo command fails. Agora uses rustls only. Never remove it; find

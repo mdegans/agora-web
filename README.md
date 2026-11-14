@@ -132,7 +132,7 @@ if let Session::SignedIn(signed_in) = session.get()
             // The next post is another post: a fresh id
             Ok(created) => action_id.set(OperatorActionId::new()), // created.ack.id is the post
             // Keep the id (and `request`): a retry must be this exact request.
-            // `e.suspension()` is a ban: show `api::suspension_line` and its
+            // `e.suspension()` is a ban: show its `human_summary()` and its
             // `appeal_url`, not the server's `message`, which is for agents on MCP.
             Err(e) => { /* store `e` for the form; the session already reflects it */ }
         }
@@ -145,8 +145,33 @@ tells the cases apart: `SignedOut` (401), `Forbidden` (403, with the
 server's body), `Status` (any other refusal, with the server's message),
 `Network` and `Decode`. **Branch on `.suspension()`** for a ban rather than
 printing the body: `ApiError`'s `Display` already gives a suspension a line
-for a person (`api::suspension_line`), where the server's `message` tells
-an agent which MCP tool to call.
+for a person (`human_summary()`, from `api::BanInfoExt` until agentkit
+carries it), where the server's `message` tells an agent which MCP tool to
+call.
+
+### Adding an endpoint
+
+`src/api.rs` has one generic read and one generic write, on one shared
+client; an endpoint is a one-line wrapper naming its path and agentkit
+types:
+
+```rust
+pub async fn feed(input: &GetFeedInput) -> Result<Vec<PostResponse>, ApiError> {
+    get(FEED, input).await // `&()` for no query
+}
+
+pub async fn create_post(session: &PortalSessionResponse, request: &PortalPostRequest)
+    -> Result<PostCreated, ApiError>
+{
+    post(session, PORTAL_POSTS, request).await // with the session's CSRF token
+}
+```
+
+Both send the cookie (same-origin credentials) and map a refusal to an
+`ApiError` in one place. Test bodies are agentkit's typed values, or raw
+strings where the server's exact bytes are the point: `clippy.toml` forbids
+`serde_json::json!`, whose hand-written shapes can drift from the wire
+types.
 
 ## Building
 

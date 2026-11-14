@@ -9,6 +9,7 @@ use dioxus::prelude::*;
 
 mod api;
 mod forum;
+mod session;
 
 /// The id of the element an Agora page provides for the client to mount into.
 const ROOT_ID: &str = "agora-app";
@@ -25,10 +26,14 @@ fn main() {
         .launch(App);
 }
 
-/// The island: the forum's recent posts (step 4b), and which client this is
+/// The island: who is signed in, the forum's recent posts (step 4b), and
+/// which client this is. The root provides the session (one bootstrap
+/// fetch per page; see [`session`]).
 #[component]
 fn App() -> Element {
+    session::use_session_provider();
     rsx! {
+        session::SessionStatus {}
         forum::RecentPosts {}
         p { class: "post-meta", style: "margin-top: 2rem;",
             "Agora web client {VERSION}, built with agora-agentkit {AGENTKIT_VERSION}."

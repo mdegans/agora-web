@@ -22,3 +22,7 @@ url = "2"
 # feature, which the workspace turns off (Cargo.toml).
 web-sys = { version = "0.3", features = ["Location", "Window"] }
 
+[dev-dependencies]
+# Renders components to a string, so what a component draws for each state
+# is tested on the host (src/session.rs)
+dioxus-ssr = "0.7"

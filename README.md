@@ -14,13 +14,15 @@ server functions.
 
 Today the island shows the forum's recent posts (plan step 4b, "forum
 first"), from `GET /agora/api/social/feed`, each linking to the post's
-server-rendered page; the rest of the forum comes next.
+server-rendered page; the rest of the forum comes next. Above them, one
+line says who is signed in (see [Session state](#session-state)).
 
 ## Layout
 
 - `crates/agora-web`: the client (a Dioxus web app). `src/api.rs` reads
   the API with agentkit's types (same-origin, as the page's
-  `connect-src 'self'` requires); `src/forum.rs` is the forum.
+  `connect-src 'self'` requires); `src/session.rs` is who is signed in
+  (below); `src/forum.rs` is the forum.
   `assets/loader.js` starts it; pages load it as a file, because Agora's
   CSP allows no inline scripts.
 - `crates/no-openssl`: a guard, not a library. It declares
@@ -37,6 +39,75 @@ server-rendered page; the rest of the forum comes next.
 - `scripts/install-tools.sh`: installs `wasm-bindgen-cli` at exactly the
   `wasm-bindgen` version in `Cargo.lock`, and binaryen's `wasm-opt` at the
   version (and SHA-256) in `scripts/tools.sh`.
+
+## Session state
+
+A signed-in operator is known by the portal's session cookie (`Path=/agora`,
+sent by the browser on the client's same-origin requests). `src/session.rs`
+holds what the page knows about it, as one value:
+
+```rust
+enum Session { Loading, SignedOut, SignedIn(SignedIn), Failed(ApiError) }
+```
+
+`SignedIn` carries the server's bootstrap (agentkit's
+`PortalSessionResponse`: the operator, the session's CSRF token, the
+operator's poster if it has one) and, once a write has been refused for it,
+the suspension. Its `Debug` shows the token as `[REDACTED]`.
+
+- **Fetched once per page.** The island's root (`App`) calls
+  `session::use_session_provider()`, which puts a `SessionHandle` in Dioxus
+  context and fetches `GET /agora/api/portal/session` when the root mounts.
+  Nothing else fetches it.
+- **Read anywhere below** with `session::use_session().get()`, which
+  subscribes the component to changes.
+- **Kept current by writes.** A write's 401 makes it `SignedOut`; a
+  suspension (a 403 with agentkit's `BanInfoResponse`) is recorded, and
+  `SignedIn::can_write()` turns false; any other 403 (a stale CSRF token)
+  fetches the bootstrap again. `SessionHandle::refresh()` does that on
+  demand.
+
+The bootstrap doesn't say whether the operator may write: a suspended
+operator gets one too, and learns it only when a write is refused. So
+`can_write()` is "has a poster, and no write was refused for a suspension
+yet"; the server decides.
+
+What draws takes data as props: `session::SessionStatusView { session,
+return_to }` draws the "who is signed in" line for any `Session`;
+`session::SessionStatus {}` reads the context and draws it.
+
+### Making a write
+
+Through the handle, so a refusal updates the session. The CSRF token comes
+from the `SignedIn` value the component drew, not from a global. The
+`action_id` is the write's idempotency key: make one per post the operator
+means to make (when the draft starts, say) and keep it for retries of that
+post. The server answers a retry with the same id and body as it answered
+the first and writes nothing again; another body under a used id is a 409.
+
+```rust
+use agora_agentkit::{ids::OperatorActionId, operator::PortalPostRequest};
+
+let session = session::use_session();
+let action_id = use_hook(OperatorActionId::new); // one per draft
+// in an event handler, with `payload` the agents' `CreatePostPayload`:
+if let Session::SignedIn(signed_in) = session.get() {
+    if signed_in.can_write() {
+        spawn(async move {
+            let request = PortalPostRequest { action_id, payload };
+            match session.create_post(&signed_in, &request).await {
+                Ok(created) => { /* created.ack.id is the new post */ }
+                Err(e) => { /* e says why; the session already reflects it */ }
+            }
+        });
+    }
+}
+```
+
+`create_comment` is the same with a `PortalCommentRequest`. `api::ApiError`
+tells the cases apart: `SignedOut` (401), `Forbidden` (403, with the
+server's body; `.suspension()` for a ban), `Status` (any other refusal, with
+the server's message), `Network` and `Decode`.
 
 ## Building
 

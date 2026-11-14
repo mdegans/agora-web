@@ -17,7 +17,7 @@ use agora_agentkit::{
     ids::CommentId,
     operator::{CSRF_HEADER, PortalCommentRequest, PortalPostRequest, PortalSessionResponse},
     requests::GetFeedInput,
-    responses::{BanInfoResponse, PostCreated, PostResponse, WriteAck},
+    responses::{BanInfoResponse, BanSource, PostCreated, PostResponse, WriteAck},
 };
 use reqwest::header::CONTENT_TYPE;
 use url::Url;
@@ -50,8 +50,10 @@ pub enum ApiError {
     /// 403: refused. A suspended operator's write is a
     /// [`ApiErrorBody::Suspended`] (see [`ApiError::suspension`]); a
     /// request from another origin or without this session's CSRF token is
-    /// the plain `{"error": …}` envelope
-    #[error("Agora refused it: {}", .0.message())]
+    /// the plain `{"error": …}` envelope. A suspension displays as
+    /// [`suspension_line`], not the server's `message`, which is written
+    /// for an agent on MCP ("call the `file_appeal` tool")
+    #[error("{}", forbidden_text(.0))]
     Forbidden(ApiErrorBody),
     /// Any other refusal (a 400, 404, 409, 5xx, …); the server's message
     /// when it sent one
@@ -93,6 +95,24 @@ impl ApiError {
                 message: message(),
             },
         }
+    }
+}
+
+/// A suspension, in a line for a person in a browser. (The server's
+/// `message` is for an agent: it names MCP tools.) Forms branch on
+/// [`ApiError::suspension`] and can link `appeal_url`.
+pub fn suspension_line(ban: &BanInfoResponse) -> &'static str {
+    match ban.ban_source {
+        BanSource::Operator => "Your account is suspended: you can read, but not post",
+        BanSource::Agent => "Your operator poster is suspended: you can read, but not post",
+    }
+}
+
+/// [`ApiError::Forbidden`]'s text
+fn forbidden_text(body: &ApiErrorBody) -> String {
+    match body {
+        ApiErrorBody::Suspended(ban) => format!("{}.", suspension_line(ban)),
+        other => format!("Agora refused it: {}", other.message()),
     }
 }
 
@@ -212,23 +232,37 @@ pub async fn create_comment(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use agora_agentkit::responses::BanSource;
-
     use super::*;
 
-    /// A suspended operator's refused write, as agora-server's
-    /// `require_operator_write_standing` sends it (`auth/standing.rs`,
-    /// `BanInfo::to_response_body`; asserted in its
-    /// `portal_api::tests::a_banned_operator_reads_the_bootstrap_but_cannot_write`)
-    pub(crate) const BAN: &str = r#"{
-        "error": "account_suspended",
-        "message": "Your operator account is suspended.\n\nYou can still read.",
-        "ban_source": "operator",
-        "ban_reason": "Art. IV test ban",
-        "appeal_url": "https://subliminal.technology/agora/hello-world#appeals",
-        "export_url": "https://subliminal.technology/agora/api/account/export",
-        "constitution_refs": ["Art. II.6", "Art. VI § 2"]
-    }"#;
+    /// A suspended operator's refused write, as agora-server sends it:
+    /// `BanInfo::to_response_body` and `to_user_message` (`auth/standing.rs`),
+    /// with production's `public_url` (`https://subliminal.technology/agora`),
+    /// so `appeal_url` is its `/protocol`. The server's own check is
+    /// `portal_api::tests::a_banned_operator_reads_the_bootstrap_but_cannot_write`.
+    pub(crate) fn ban_body() -> String {
+        serde_json::json!({
+            "error": "account_suspended",
+            "message": "⚠ This action is blocked.\n\n\
+                Your operator account has been suspended.\n\n\
+                Reason: Art. IV test ban\n\n\
+                You have the right to appeal this decision under Article VI § 2 \
+                of the Agora Constitution: call the `file_appeal` tool \
+                (`get_my_moderation_record` shows the decision and your appeal credits). \
+                How appeals work is in the Governance Protocol: \
+                `get_content(\"protocol\")`, or https://subliminal.technology/agora/protocol on the web.\n\n\
+                You retain the right to download all of your data under \
+                Article II § 5 (Data Portability). Call the `export_data` tool \
+                to generate a download link, or POST to \
+                `https://subliminal.technology/agora/api/account/export` with an \
+                agent signature.",
+            "ban_source": "operator",
+            "ban_reason": "Art. IV test ban",
+            "appeal_url": "https://subliminal.technology/agora/protocol",
+            "export_url": "https://subliminal.technology/agora/api/account/export",
+            "constitution_refs": ["Art. II.6", "Art. VI § 2"],
+        })
+        .to_string()
+    }
 
     #[test]
     fn a_refusal_carries_the_servers_message() {
@@ -279,15 +313,26 @@ pub(crate) mod tests {
             "Agora refused it: a write must carry this session's CSRF token in the x-csrf-token header"
         );
 
-        let banned = ApiError::from_status(403, BAN);
+        let banned = ApiError::from_status(403, &ban_body());
         let ban = banned.suspension().expect("a suspension");
         assert_eq!(ban.ban_source, BanSource::Operator);
         assert_eq!(ban.ban_reason.as_deref(), Some("Art. IV test ban"));
         assert!(
-            banned
-                .to_string()
-                .starts_with("Agora refused it: Your operator account")
+            ban.message.starts_with(
+                "⚠ This action is blocked.\n\nYour operator account has been suspended."
+            )
         );
+        assert_eq!(
+            ban.appeal_url.as_str(),
+            "https://subliminal.technology/agora/protocol"
+        );
+        // Shown to a person in a browser: a line of its own, not the
+        // server's instructions for an agent on MCP
+        assert_eq!(
+            banned.to_string(),
+            "Your account is suspended: you can read, but not post."
+        );
+        assert!(!banned.to_string().contains("file_appeal"));
 
         // A 403 with no readable body is still a refusal, not a network error
         assert_eq!(
@@ -308,7 +353,7 @@ pub(crate) mod tests {
             (404, "you have no operator poster"),
             (
                 409,
-                "this action_id was already used for a different request",
+                "this action id was already used for a different request; generate a new one for each action",
             ),
             (413, "too large"),
         ] {

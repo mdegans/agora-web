@@ -13,7 +13,7 @@
 //! types. The portal's routes are authenticated by the portal's session
 //! cookie, which the browser sends on a same-origin request.
 
-use std::sync::{Arc, LazyLock};
+use std::sync::LazyLock;
 
 use agora_agentkit::{
     errors::ApiErrorBody,
@@ -52,8 +52,9 @@ static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 /// never got a usable answer (try again).
 ///
 /// `Clone` and `PartialEq`, as the session state that holds one must be
-/// (a component's props). The one variant around an error that is neither,
-/// [`ApiError::Decode`], shares it ([`Shared`]).
+/// (a component's props). So the source errors that are neither
+/// (`reqwest::Error`, `serde_json::Error`) are kept as their text, by
+/// manual `From` impls, and `?` still converts them.
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 pub enum ApiError {
     /// The request never got an answer (offline, the server down)
@@ -80,7 +81,7 @@ pub enum ApiError {
     /// agentkit's types make all but impossible, a request body couldn't be
     /// written)
     #[error("Agora's answer couldn't be read ({0})")]
-    Decode(Shared<serde_json::Error>),
+    Decode(String),
 }
 
 impl ApiError {
@@ -131,41 +132,7 @@ impl From<url::ParseError> for ApiError {
 
 impl From<serde_json::Error> for ApiError {
     fn from(e: serde_json::Error) -> Self {
-        Self::Decode(Shared(Arc::new(e)))
-    }
-}
-
-/// An error that is neither `Clone` nor `PartialEq` (`serde_json::Error`),
-/// shared so that an [`ApiError`] can be both: a clone is the same error,
-/// and equal to it; two errors made apart are never equal, whatever they
-/// say. That is what the session state needs (did it change?), and what a
-/// test can't fake: it compares a `Decode` by `matches!`, not by value.
-#[derive(Debug)]
-pub struct Shared<E>(Arc<E>);
-
-impl<E> Clone for Shared<E> {
-    fn clone(&self) -> Self {
-        Self(Arc::clone(&self.0))
-    }
-}
-
-impl<E> PartialEq for Shared<E> {
-    fn eq(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
-    }
-}
-
-impl<E: std::fmt::Display> std::fmt::Display for Shared<E> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.0.fmt(f)
-    }
-}
-
-impl<E> std::ops::Deref for Shared<E> {
-    type Target = E;
-
-    fn deref(&self) -> &E {
-        &self.0
+        Self::Decode(e.to_string())
     }
 }
 
@@ -487,17 +454,16 @@ pub(crate) mod tests {
         }
     }
 
-    /// A `Decode` is equal to its clones, and only to them
+    /// `?` turns a serde error into a `Decode`, keeping its text
     #[test]
-    fn a_decode_error_is_shared() {
-        let decode = |text| ApiError::from(serde_json::from_str::<u8>(text).unwrap_err());
-        let e = decode("x");
-        assert!(matches!(&e, ApiError::Decode(inner) if inner.is_syntax()));
-        assert_eq!(e.clone(), e);
-        assert_ne!(decode("x"), e);
-        assert!(
-            e.to_string()
-                .starts_with("Agora's answer couldn't be read (")
+    fn a_decode_error_keeps_its_text() {
+        let source = serde_json::from_str::<u8>("x").unwrap_err();
+        let text = source.to_string();
+        let e = ApiError::from(source);
+        assert_eq!(e, ApiError::Decode(text.clone()));
+        assert_eq!(
+            e.to_string(),
+            format!("Agora's answer couldn't be read ({text})")
         );
     }
 

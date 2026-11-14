@@ -32,6 +32,7 @@ jobs:
             ~/.cargo/git
             ~/.local/bin
             ~/.cargo/bin/wasm-bindgen
+            ~/.cargo/bin/cargo-audit
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('Cargo.lock', 'scripts/tools.sh') }}
           restore-keys: ${{ runner.os }}-cargo-
@@ -47,6 +48,19 @@ jobs:
 
       - name: Test
         run: cargo test --locked --workspace
+
+      # The RustSec audit agora runs on its own lockfiles, at the same
+      # cargo-audit version (agora's docker/Dockerfile.audit; bump together).
+      # A fresh advisory-db clone every run: a GitHub-hosted runner keeps
+      # none between jobs. The cached binary is reused only at that version.
+      - name: Security audit
+        env:
+          CARGO_AUDIT_VERSION: 0.22.2
+        run: |
+          if [ "$(cargo-audit --version 2>/dev/null)" != "cargo-audit $CARGO_AUDIT_VERSION" ]; then
+            cargo install cargo-audit --locked --version "$CARGO_AUDIT_VERSION"
+          fi
+          cargo audit --file Cargo.lock
 
       - name: Install wasm-bindgen and wasm-opt
         run: |

@@ -9,7 +9,14 @@ repository.workspace = true
 
 [dependencies]
 agora-agentkit = { workspace = true }
+agora-web-ui = { path = "../agora-web-ui" }
 dioxus = { workspace = true }
+# Only for the `hydrate` feature: dioxus-web's own, which the `dioxus`
+# umbrella enables only with dioxus-fullstack
+dioxus-web = { workspace = true, optional = true, features = ["hydrate"] }
+# Already in the graph through web-sys; for setting the two globals hydration
+# reads (src/main.rs, `hydration`)
+js-sys = { version = "0.3", optional = true }
 # All already in the graph through agentkit and dioxus-web. reqwest uses the
 # browser's fetch on wasm32; no TLS of its own there (and no OpenSSL anywhere).
 reqwest = { version = "0.12", default-features = false, features = [] }
@@ -18,4 +25,9 @@ url = "2"
 # `Window` and `Location` for the page's origin (src/api.rs). dioxus-web
 # 0.7.10 needs `Location` too but gets it only through its `devtools`
 # feature, which the workspace turns off (Cargo.toml).
-web-sys = { version = "0.3", features = ["Location", "Window"] }
+web-sys = { version = "0.3", features = ["Document", "Element", "Location", "Node", "Window"] }
+
+[features]
+# Adopt the server's pre-rendered island instead of mounting fresh: the
+# release build (scripts/build.sh). The dev build (`--dev`) mounts fresh.
+hydrate = ["dep:dioxus-web", "dep:js-sys"]

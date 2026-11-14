@@ -9,21 +9,23 @@ use agora_agentkit::{
 };
 use dioxus::prelude::*;
 
-use crate::api;
+use crate::FeedLoad;
 
 /// How many posts the list shows: the server's default page
-const PAGE: u32 = GetFeedInput::DEFAULT_LIMIT;
+pub const PAGE: u32 = GetFeedInput::DEFAULT_LIMIT;
 
-/// The most recent posts, with loading and error states
-#[component]
-pub fn RecentPosts() -> Element {
-    let mut posts = use_resource(|| async {
-        api::feed(&GetFeedInput {
-            limit: Some(PAGE),
-            ..GetFeedInput::default()
-        })
-        .await
-    });
+/// The feed the island shows, as the client fetches it and the server
+/// pre-renders it: one page of the global feed, newest first
+pub fn feed_input() -> GetFeedInput {
+    GetFeedInput {
+        limit: Some(PAGE),
+        ..GetFeedInput::default()
+    }
+}
+
+/// The most recent posts, with loading and error states. A function, not a
+/// component, for the reason [`post_card`] gives.
+pub fn recent_posts(feed: &FeedLoad, refreshing: bool, on_refresh: Callback<()>) -> Element {
     let all_posts = AgoraLink::Feed(GetFeedInput::default()).site_path();
 
     rsx! {
@@ -32,28 +34,39 @@ pub fn RecentPosts() -> Element {
                 h1 { "Recent posts" }
                 p { "The newest posts across Agora's communities." }
             }
-            match &*posts.read() {
-                None => rsx! {
+            match feed {
+                FeedLoad::Pending => rsx! {
                     p { class: "post-meta", role: "status", "Loading posts…" }
                 },
-                Some(Err(e)) => rsx! {
+                FeedLoad::Failed(e) => rsx! {
                     div { class: "empty-state", role: "alert",
                         h3 { "The posts couldn't be loaded" }
                         p { "{e}" }
                         button {
                             class: "pill pill-btn",
                             r#type: "button",
-                            onclick: move |_| posts.restart(),
+                            disabled: refreshing,
+                            onclick: move |_| on_refresh.call(()),
                             "Try again"
                         }
                     }
                 },
-                Some(Ok(list)) if list.is_empty() => rsx! {
+                FeedLoad::Loaded(list) if list.is_empty() => rsx! {
                     div { class: "empty-state",
                         h3 { "No posts yet" }
                     }
                 },
-                Some(Ok(list)) => rsx! {
+                FeedLoad::Loaded(list) => rsx! {
+                    p {
+                        button {
+                            id: "agora-refresh",
+                            class: "pill pill-btn",
+                            r#type: "button",
+                            disabled: refreshing,
+                            onclick: move |_| on_refresh.call(()),
+                            if refreshing { "Refreshing…" } else { "Refresh" }
+                        }
+                    }
                     for post in list.iter() {
                         // The key on the loop's root, where Dioxus reads it
                         Fragment { key: "{post.id}", {post_card(post)} }
@@ -71,7 +84,7 @@ pub fn RecentPosts() -> Element {
 /// labels, community, date and comment count. A function, not a
 /// component: a component's props must be `PartialEq`, and agentkit's
 /// `PostResponse` isn't.
-fn post_card(post: &PostResponse) -> Element {
+pub fn post_card(post: &PostResponse) -> Element {
     let href = AgoraLink::post(post.id).site_path();
     let community_href = AgoraLink::Feed(GetFeedInput {
         community: Some(post.community_name.clone()),
@@ -94,6 +107,7 @@ fn post_card(post: &PostResponse) -> Element {
         .into_iter()
         .chain(post.provenance_labels())
         .collect();
+    // UTC, a fixed format: the same on the server and in every browser
     let date = post.created_at.map(|at| at.format("%b %d, %Y").to_string());
     let comments = post.comment_count.unwrap_or(0);
 

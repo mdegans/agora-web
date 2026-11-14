@@ -1,0 +1,26 @@
+[package]
+name = "agora-web-ui"
+version = "0.1.0"
+description = "Agora's web components: drawn by the client (wasm32) and pre-rendered by agora-server (native), one copy"
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+# Compiled twice: into the client (wasm32) and into agora-server (native, a
+# path dependency into the `web/` submodule, with `ssr`). So: no web-sys, no
+# fetching, nothing that reads the browser or the clock while drawing. What
+# draws takes data; the client's wrappers fetch (`FeedSource`).
+[dependencies]
+agora-agentkit = { workspace = true }
+# What the components need of Dioxus and nothing more, so agora-server gets
+# no renderer, launcher or logger. The client adds `web` through its own
+# `dioxus` (feature unification). The version is the workspace's, exactly.
+dioxus = { version = "=0.7.10", default-features = false, features = ["macro", "html", "signals", "hooks"] }
+dioxus-ssr = { workspace = true, optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[features]
+# The server's pre-render: `ssr::render`
+ssr = ["dep:dioxus-ssr"]

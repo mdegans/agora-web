@@ -2,6 +2,9 @@
 resolver = "3"
 members = [
     "crates/agora-web",
+    # What draws: the components, for the client (wasm32) and for
+    # agora-server's pre-render (native, `ssr` feature). See its README note.
+    "crates/agora-web-ui",
     # scripts/dev.sh's server (native; not part of the wasm build)
     "crates/dev-server",
     # Guard: fails resolution if openssl-sys enters the graph (rustls only).
@@ -23,7 +26,16 @@ agora-agentkit = { version = "0.160.0" }
 # dioxus-web would open a websocket to `/_dioxus` for `dx serve`, which
 # isn't used here (dx needs OpenSSL), and retry it forever. Release builds
 # never compiled it in (it is gated on debug assertions).
-dioxus = { version = "0.7", default-features = false, features = ["web", "launch", "logger", "lib"] }
+dioxus = { version = "=0.7.10", default-features = false, features = ["web", "launch", "logger", "lib"] }
+# Exact pins, with `dioxus` above: the server pre-renders and the client
+# hydrates with the same Dioxus, or the hydration ids don't line up
+# (agora-server's build.rs checks that the two lockfiles agree).
+# The pre-render, for agora-server only (agora-web-ui's `ssr` feature)
+dioxus-ssr = { version = "=0.7.10" }
+# The client's hydration (agora-web's `hydrate` feature). It brings
+# dioxus-fullstack-core (types only: the hydration context's format), not
+# dioxus-fullstack: no server functions, no server.
+dioxus-web = { version = "=0.7.10", default-features = false }
 
 [profile.release]
 # Size over speed: this ships to browsers. wasm-opt shrinks it further.

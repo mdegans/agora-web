@@ -19,9 +19,11 @@ repository = "https://github.com/mdegans/agora-web"
 # Bump it here in the same change as agora's.
 agora-agentkit = { version = "0.162.0" }
 # Dioxus's defaults less `devtools`: in a debug build (scripts/dev.sh's)
-# dioxus-web would open a websocket to `/_dioxus` for `dx serve`, which
-# isn't used here (dx needs OpenSSL), and retry it forever. Release builds
-# never compiled it in (it is gated on debug assertions).
+# dioxus-web would open a websocket to `/_dioxus` for `dx serve` and retry
+# it forever. `just dev` (`dx serve`) turns it back on through agora-web's
+# `dx` feature (crates/agora-web/Cargo.toml). Release builds never compile
+# it in either way: dioxus-web gates it on debug assertions, and
+# scripts/build.sh never enables the feature.
 dioxus = { version = "0.7", default-features = false, features = ["web", "launch", "logger", "lib"] }
 
 [profile.release]
@@ -30,3 +32,12 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+# `dx serve`'s build profile (`just dev`; dx uses a profile by this name and
+# defines it ad hoc if it's absent). Without debug info: with it the dev
+# wasm is about 90 MB and dx's wasm-bindgen pass takes about 6 s of a 7 s
+# rebuild; without, it takes 2.5 to 5 s. scripts/build.sh never uses
+# this profile.
+[profile.wasm-dev]
+inherits = "dev"
+debug = false

@@ -136,9 +136,8 @@ impl From<serde_json::Error> for ApiError {
     }
 }
 
-/// What belongs on agentkit's `BanInfoResponse`, here until the next
-/// agentkit release makes it an inherent method (then delete this trait;
-/// callers don't change)
+/// The line for a person about a suspension, in the client until the
+/// human and agent display traits are decided (Steward, 2026-11-14)
 pub trait BanInfoExt {
     /// The suspension, in a line for a person in a browser. (The server's
     /// `message` is for an agent: it names MCP tools.)
@@ -154,26 +153,16 @@ impl BanInfoExt for BanInfoResponse {
     }
 }
 
-/// What belongs on agentkit's `ApiErrorBody`, here until the next agentkit
-/// release makes them inherent methods (then delete this trait; callers
-/// don't change)
+/// The client's own words for a refusal. (`ApiErrorBody::suspension` is
+/// agentkit's since 0.162.0; the wording for people stays here until the
+/// human and agent display traits are decided.)
 pub trait ApiErrorBodyExt {
-    /// The suspension, when the body is one
-    fn suspension(&self) -> Option<&BanInfoResponse>;
-
     /// The text for a person: a suspension's [`BanInfoExt::human_summary`],
     /// otherwise the body's own message
     fn human_message(&self) -> String;
 }
 
 impl ApiErrorBodyExt for ApiErrorBody {
-    fn suspension(&self) -> Option<&BanInfoResponse> {
-        match self {
-            Self::Suspended(ban) => Some(ban),
-            _ => None,
-        }
-    }
-
     fn human_message(&self) -> String {
         match self.suspension() {
             Some(ban) => format!("{}.", ban.human_summary()),

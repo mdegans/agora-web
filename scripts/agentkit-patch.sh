@@ -5,6 +5,8 @@
 #   scripts/agentkit-patch.sh on    write .cargo/config.toml's [patch], point
 #                                   Cargo.lock at it, and check that it took
 #   scripts/agentkit-patch.sh off   undo `on`
+#   scripts/agentkit-patch.sh check `just dev` runs it: with the patch on, fail
+#                                   unless cargo really builds ./agentkit
 # Never commit with it on: scripts/local-patch-check.sh (the hook, CI) refuses.
 set -eu
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
@@ -33,6 +35,34 @@ ours() {
     [ -f "$CONFIG" ] && [ "$(head -1 "$CONFIG")" = "$MARK" ]
 }
 
+# The checkout's version, e.g. 0.163.0
+checkout_version() {
+    sed -n 's/^version = "\([^"]*\)".*/\1/p' agentkit/Cargo.toml | head -1
+}
+
+# Whether cargo resolves agora-agentkit to ./agentkit, with no unused patch
+in_use() {
+    cargo metadata --format-version 1 2>/dev/null |
+        grep -q '"id":"path+file://[^"]*#agora-agentkit@' &&
+        ! grep -q '^\[\[patch.unused\]\]' Cargo.lock
+}
+
+# The agentkit this workspace is locked to (the committed lockfile), e.g.
+# 0.162.1: the version the client is built and tested against
+locked() {
+    git show HEAD:Cargo.lock 2>/dev/null |
+        awk '$0 == "name = \"agora-agentkit\"" { f = 1; next } f && /^version = / { gsub(/[^0-9.]/, "", $3); print $3; exit }'
+}
+
+# Why cargo won't use the checkout, and the two ways out. A `[patch]` only
+# applies when the patched crate's version satisfies the requirement;
+# otherwise cargo takes crates.io's without a word louder than a warning
+mismatch() {
+    echo "error: cargo isn't building ./agentkit ($(checkout_version)): this workspace requires agora-agentkit $(requirement), which $(checkout_version) doesn't satisfy, so cargo uses crates.io's and edits in ./agentkit do nothing." >&2
+    echo "  Either put the checkout on a version it accepts:  git -C agentkit checkout v$(locked)   (the version this workspace is locked to; or a branch made from it)" >&2
+    echo "  or, to work on a newer agentkit, raise the requirement here to match it: edit agora-agentkit's version in Cargo.toml to \"$(checkout_version)\" (agora's build then wants the same in agora and agents; commit it only once that agentkit is released)." >&2
+}
+
 case "${1:-}" in
 on)
     [ -f agentkit/Cargo.toml ] || {
@@ -46,20 +76,18 @@ on)
     mkdir -p .cargo target
     cp Cargo.lock "$BACKUP"
     printf '%s\n%s\n%s\n' "$MARK" '[patch.crates-io]' 'agora-agentkit = { path = "agentkit" }' > "$CONFIG"
-    checkout=$(sed -n 's/^version = "\([^"]*\)".*/\1/p' agentkit/Cargo.toml | head -1)
+    checkout=$(checkout_version)
     # Point the lockfile at it: until then cargo keeps the locked crates.io
     # version and lists the checkout under [[patch.unused]]
-    if cargo update -p agora-agentkit 2>/dev/null &&
-        cargo metadata --format-version 1 2>/dev/null |
-        grep -q '"id":"path+file://[^"]*#agora-agentkit@' &&
-        ! grep -q '^\[\[patch.unused\]\]' Cargo.lock; then
+    if cargo update -p agora-agentkit 2>/dev/null && in_use; then
         echo "patched: agora-agentkit $checkout from ./agentkit; \`just agentkit-unpatch\` to undo"
         exit 0
     fi
     rm -f "$CONFIG"
     rmdir .cargo 2>/dev/null || true
     cp "$BACKUP" Cargo.lock
-    echo "error: cargo didn't use ./agentkit ($checkout): this workspace requires agora-agentkit $(requirement), which $checkout doesn't satisfy. Check out a version it accepts, or bump the requirement in Cargo.toml locally (and don't commit that before agentkit is released). Nothing was changed." >&2
+    mismatch
+    echo "  Nothing was changed." >&2
     exit 1
     ;;
 off)
@@ -88,8 +116,23 @@ off)
     scripts/local-patch-check.sh
     echo "unpatched: agora-agentkit from crates.io"
     ;;
+check)
+    # Not patched: nothing to check
+    ours || exit 0
+    [ -f agentkit/Cargo.toml ] || {
+        echo "error: $CONFIG patches agora-agentkit to ./agentkit, which is gone; \`just agentkit-unpatch\`, or put the checkout back" >&2
+        exit 1
+    }
+    # The checkout may have moved since `on` (a pull, a version bump): point
+    # the lockfile at it again, then see whether cargo takes it
+    cargo update -p agora-agentkit 2>/dev/null || true
+    in_use && exit 0
+    mismatch
+    echo "  (\`just agentkit-unpatch\` to go back to crates.io's.)" >&2
+    exit 1
+    ;;
 *)
-    echo "usage: scripts/agentkit-patch.sh on|off" >&2
+    echo "usage: scripts/agentkit-patch.sh on|off|check" >&2
     exit 2
     ;;
 esac

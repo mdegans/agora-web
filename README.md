@@ -591,6 +591,17 @@ which fails while agentkit resolves to anything but crates.io, or while
 A shared component's change ships as an agentkit release and a pin bump
 here and in agora.
 
+A `[patch]` only applies while the checkout's version satisfies this
+workspace's requirement. Pull the checkout past it (agentkit's `main` after a
+minor release, say) and cargo goes back to crates.io's with only a warning, so
+edits in `./agentkit` would do nothing: `just dev` checks for that first
+(`scripts/agentkit-patch.sh check`) and refuses, naming the version to check
+out. **Working on agentkit:** branch from the tag this workspace is locked to
+(`git -C agentkit checkout -b my-change v<locked version>`), and leave
+agentkit's own version bump to the last commit of its PR, so the patch keeps
+applying while you work; after the release, `just agentkit-unpatch`, raise
+the requirement here and `cargo update -p agora-agentkit`.
+
 ### Re-checking hot reload in a browser
 
 `scripts/hot-reload-check.py` loads `just dev`'s page in agora's pinned

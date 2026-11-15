@@ -22,8 +22,13 @@ makes each edit below in turn, waiting for the page to show it:
 
 The first three must keep the marker (patched in place, no navigation); the
 last must lose it (a reload). It also counts the page's stylesheet links and
-the CSS it fetched, to show the stylesheet is loaded once. Every file is
-restored on exit, whatever happens.
+the CSS it fetched, to show the stylesheet is loaded once.
+
+It refuses to start if any file it edits has uncommitted changes, and undoes
+each of its edits on exit (an exception, Ctrl-C, SIGTERM or SIGHUP) by
+reversing that edit alone, so anything else written to the file meanwhile
+stays. A SIGKILL leaves its edits in place: `git diff` shows them, and
+`git checkout -- <file>` removes them.
 
 Standard library only (WebDriver over HTTP), like scripts/browser-relay.py
 in agora.
@@ -31,6 +36,8 @@ in agora.
 
 import json
 import os
+import signal
+import subprocess
 import sys
 import time
 import urllib.request
@@ -102,11 +109,42 @@ def record(results, name, took, kept):
     results.append((name, took, kept))
 
 
+# The edits made so far, newest last, for undo()
+EDITS = []
+
+
 def edit(path, old, new):
     text = path.read_text()
     if text.count(old) != 1:
         raise SystemExit(f"FAIL: expected exactly one {old!r} in {path}")
     path.write_text(text.replace(old, new))
+    EDITS.append((path, old, new))
+
+
+def undo():
+    """Reverse this run's edits, newest first, each only where it still stands"""
+    while EDITS:
+        path, old, new = EDITS.pop()
+        text = path.read_text()
+        if text.count(new) == 1:
+            path.write_text(text.replace(new, old))
+        else:
+            print(f"WARNING: couldn't undo the edit in {path} ({new!r} isn't there once); check `git diff`",
+                  file=sys.stderr)
+
+
+def refuse_dirty(paths):
+    """Exit unless every file to be edited matches what git has"""
+    changed = subprocess.run(
+        ["git", "-C", str(ROOT), "status", "--porcelain", "--", *map(str, paths)],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    if changed:
+        raise SystemExit(f"FAIL: commit or stash these first; this check edits them:\n{changed}")
+
+
+def on_signal(signum, _frame):
+    raise SystemExit(f"stopped by signal {signum}")
 
 
 def styles(browser):
@@ -120,7 +158,9 @@ def styles(browser):
 
 
 def main():
-    originals = {path: path.read_text() for path in (FORUM, CSS, MAIN)}
+    refuse_dirty((FORUM, CSS, MAIN))
+    for signum in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(signum, on_signal)
     browser = Browser()
     results = []
     try:
@@ -179,8 +219,7 @@ def main():
         took = wait_for(browser, f"return {TEXT}.includes(' agora-app.')", "the rebuild")
         record(results, "a new interpolation (outside what rsx can patch)", took, browser.js(MARKED))
     finally:
-        for path, text in originals.items():
-            path.write_text(text)
+        undo()
         try:
             browser.quit()
         except Exception:

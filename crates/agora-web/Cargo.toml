@@ -32,8 +32,9 @@ url = "2"
 # 0.7.10 needs `Location` too but gets it only through its `devtools`
 # feature, which the workspace turns off (Cargo.toml).
 # `Document`, `Element`, `Node`, `Storage` and `console` for reading the
-# page's data block and its one guarded reload (src/mount.rs).
-web-sys = { version = "0.3", features = ["Document", "Element", "Location", "Node", "Storage", "Window", "console"] }
+# page's data block, its one guarded reload and a static page's disabled
+# buttons (src/mount.rs).
+web-sys = { version = "0.3", features = ["Document", "Element", "Location", "Node", "NodeList", "Storage", "Window", "console"] }
 
 [dev-dependencies]
 # agentkit's pre-render, so the host tests draw what agora-server draws

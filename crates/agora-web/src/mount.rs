@@ -8,17 +8,22 @@
 //! nodes. It can't mount fresh instead: with the feature on, dioxus-web
 //! hydrates every launch. So when the page can't be hydrated ([`plan`]) it
 //! doesn't launch at all, and the server's markup stays as the page it is
-//! for readers without JavaScript (links work, the Refresh button doesn't),
-//! with one console warning:
+//! for readers without JavaScript (links work; its buttons, which would do
+//! nothing without the client, are disabled), with one console warning:
 //!
-//! - no data block, or one this client can't read: nothing else is tried;
+//! - no data block, one this client can't read, or an island element with
+//!   nothing in it to adopt: nothing else is tried;
 //! - a block drawn by another agentkit ([`IslandError::Version`]): the page
 //!   and this client come from different builds (a deploy between the page
 //!   and its scripts, or a cache in between), so the page reloads **once**,
-//!   to fetch the client the server now has. The reload is guarded by one
-//!   `sessionStorage` entry naming the two versions (`GUARD_KEY`): a
-//!   second load with the same pair stays static, and when storage is
-//!   unavailable (private mode, blocked) there is no reload at all. A
+//!   to fetch the client the server now has. It is a plain
+//!   `location.reload()`, which gets the current client because agora-server
+//!   serves the bundle `no-cache` with an `ETag`. The reload is guarded by
+//!   one `sessionStorage` entry (`GUARD_KEY`, naming the two versions for
+//!   whoever reads it): while it is there, no load reloads again, whatever
+//!   pair it finds (two server generations behind one origin would
+//!   otherwise alternate forever), and when storage is unavailable or
+//!   unreadable (private mode, blocked) there is no reload at all. A
 //!   successful hydration clears the entry.
 //!
 //! **The dev build** (no `hydrate`: `scripts/build.sh --dev`, and dx) runs
@@ -44,7 +49,8 @@ const GUARD_KEY: &str = "agora-web.reloaded-for";
 pub enum Guard {
     /// No storage to remember a reload in: never reload
     Unavailable,
-    /// Storage, and the pair it last reloaded for, if any
+    /// Storage, and the pair it last reloaded for, if it has reloaded since
+    /// the last successful hydration
     Available(Option<String>),
 }
 
@@ -79,9 +85,10 @@ pub fn plan(block: Option<&str>, guard: &Guard) -> Plan {
         Ok(page) => Plan::Hydrate(page),
         Err(IslandError::Version { page, client }) => {
             let pair = format!("{page} -> {client}");
+            // One reload until a hydration succeeds: any entry stops it
             let reload = match guard {
-                Guard::Available(last) if last.as_deref() != Some(pair.as_str()) => Some(pair),
-                _ => None,
+                Guard::Available(None) => Some(pair),
+                Guard::Available(Some(_)) | Guard::Unavailable => None,
             };
             let then = if reload.is_some() {
                 "reloading once for the current client"
@@ -118,17 +125,25 @@ fn root() -> Option<web_sys::Element> {
 #[cfg(feature = "hydrate")]
 pub fn hydrate() {
     let storage = web_sys::window().and_then(|w| w.session_storage().ok().flatten());
-    let guard = match &storage {
-        Some(storage) => Guard::Available(storage.get_item(GUARD_KEY).ok().flatten()),
-        None => Guard::Unavailable,
+    // Storage that can't be read can't be trusted to stop a second reload
+    let guard = match storage.as_ref().map(|s| s.get_item(GUARD_KEY)) {
+        Some(Ok(last)) => Guard::Available(last),
+        Some(Err(_)) | None => Guard::Unavailable,
     };
     let block = data_block();
     match plan(block.as_deref(), &guard) {
         Plan::Hydrate(page) => {
-            if root().is_none() {
-                warn(&format!(
-                    "agora-web: this page has no #{ROOT_ID} to hydrate; not starting"
+            // Hydration adopts the server's nodes: with none there, it
+            // would adopt nothing and draw nothing
+            if !root().is_some_and(|root| root.first_element_child().is_some()) {
+                stay(&format!(
+                    "agora-web: this page's #{ROOT_ID} is missing or empty, nothing to \
+                     hydrate; not starting"
                 ));
+                return;
+            }
+            if let Err(e) = globals::set() {
+                stay(&format!("agora-web: {e}; not starting"));
                 return;
             }
             if let Some(storage) = &storage {
@@ -136,11 +151,10 @@ pub fn hydrate() {
                 // reload once again
                 let _ = storage.remove_item(GUARD_KEY);
             }
-            globals::set();
             crate::launch(page);
         }
         Plan::Stay { warning, reload } => {
-            warn(&warning);
+            stay(&warning);
             // Only once the guard is written: a reload that can't be
             // remembered could be the first of many
             if let (Some(pair), Some(storage)) = (reload, &storage)
@@ -166,9 +180,24 @@ fn data_block() -> Option<String> {
         .text_content()
 }
 
+/// Not starting: say why, once, and disable the island's buttons, which
+/// would do nothing without the client (a link still works). The page isn't
+/// hydrated, so changing its markup can't misplace anything
 #[cfg(feature = "hydrate")]
-fn warn(message: &str) {
+fn stay(message: &str) {
+    use web_sys::wasm_bindgen::JsCast;
     web_sys::console::warn_1(&message.into());
+    let Some(buttons) = root().and_then(|root| root.query_selector_all("button").ok()) else {
+        return;
+    };
+    for i in 0..buttons.length() {
+        if let Some(button) = buttons
+            .item(i)
+            .and_then(|n| n.dyn_into::<web_sys::Element>().ok())
+        {
+            let _ = button.set_attribute("disabled", "");
+        }
+    }
 }
 
 /// The dev build's start: the island's element emptied (its markup is the
@@ -206,11 +235,10 @@ mod globals {
     /// CBOR `[]` (one byte, `0x80`), in base64
     pub const EMPTY_CONTEXT: &str = "gA==";
 
-    pub fn set() {
-        let Some(window) = web_sys::window() else {
-            return;
-        };
-        let window: JsValue = window.into();
+    /// Sets both, or says which couldn't be: hydrating without them fails
+    /// inside dioxus-web, so the caller doesn't launch
+    pub fn set() -> Result<(), String> {
+        let window: JsValue = web_sys::window().ok_or("no window")?.into();
         for (name, value) in [
             (
                 "initial_dioxus_hydration_data",
@@ -218,8 +246,12 @@ mod globals {
             ),
             ("hydrate_queue", js_sys::Array::new().into()),
         ] {
-            let _ = js_sys::Reflect::set(&window, &name.into(), &value);
+            match js_sys::Reflect::set(&window, &name.into(), &value) {
+                Ok(true) => {}
+                _ => return Err(format!("couldn't set window.{name} for hydration")),
+            }
         }
+        Ok(())
     }
 }
 
@@ -298,11 +330,11 @@ mod tests {
         }
     }
 
-    /// The props the client hydrates with draw the server's markup: the
-    /// same root, the same data (what agora's browser test sees in a
-    /// browser)
+    /// What the client launches from the server's block draws the server's
+    /// markup: the block read by [`plan`], then the `VirtualDom` `launch`
+    /// mounts (`crate::island_dom`)
     #[test]
-    fn the_hydrated_props_draw_the_servers_markup() {
+    fn the_hydrated_island_draws_the_servers_markup() {
         let page = page("A title");
         let server =
             ssr::render_island(DATA_ID, agora_agentkit::ui::feed::FeedIsland, page.clone())
@@ -310,10 +342,9 @@ mod tests {
         let Plan::Hydrate(read) = plan(Some(&block_text(&page)), &Guard::Unavailable) else {
             panic!("not hydrated");
         };
-        assert_eq!(
-            ssr::pre_render(agora_agentkit::ui::feed::FeedIsland, read),
-            server.html
-        );
+        let mut dom = crate::island_dom(read);
+        dom.rebuild_in_place();
+        assert_eq!(dioxus_ssr::pre_render(&dom), server.html);
     }
 
     /// No block, or one that isn't this island's JSON: stay, no reload
@@ -343,7 +374,7 @@ mod tests {
         );
         assert!(warning.contains("reloading once"), "{warning}");
 
-        // After that reload: the same pair, so it stays
+        // After that reload: the guard is there, so it stays
         let Plan::Stay { warning, reload } = plan(Some(&text), &Guard::Available(Some(pair())))
         else {
             panic!("hydrated");
@@ -351,20 +382,48 @@ mod tests {
         assert_eq!(reload, None);
         assert!(warning.contains("not starting"), "{warning}");
 
-        // A guard left by another pair doesn't stop this one's reload
+        // A guard left by another pair stops it too: one reload until a
+        // hydration succeeds, whatever the versions
         let Plan::Stay { reload, .. } = plan(
             Some(&text),
             &Guard::Available(Some(format!("0.0.9 -> {AGENTKIT_VERSION}"))),
         ) else {
             panic!("hydrated");
         };
-        assert_eq!(reload, Some(pair()));
+        assert_eq!(reload, None);
 
         // Nowhere to remember it: never reload
         let Plan::Stay { reload, .. } = plan(Some(&text), &Guard::Unavailable) else {
             panic!("hydrated");
         };
         assert_eq!(reload, None);
+    }
+
+    /// Pages from two server generations behind one origin, alternating
+    /// (or a cache serving both): one reload in all, not one per load. The
+    /// guard is driven as `hydrate` drives it
+    #[test]
+    fn alternating_versions_reload_once() {
+        let one = other_version(&page("A title"));
+        let two = one.replace(r#""agentkit":"0.1.0""#, r#""agentkit":"0.0.9""#);
+        let mut stored: Option<String> = None;
+        let mut reloads = 0;
+        for load in 0..10 {
+            let text = if load % 2 == 0 { &one } else { &two };
+            if let Plan::Stay {
+                reload: Some(pair), ..
+            } = plan(Some(text), &Guard::Available(stored.clone()))
+            {
+                stored = Some(pair);
+                reloads += 1;
+            }
+        }
+        assert_eq!(reloads, 1);
+        // A hydration clears the guard; the next skew may reload once again
+        let Plan::Stay { reload, .. } = plan(Some(&one), &Guard::Available(None)) else {
+            panic!("hydrated");
+        };
+        assert!(reload.is_some());
     }
 
     /// The version is checked before the props: a page of another agentkit

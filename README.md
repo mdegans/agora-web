@@ -74,14 +74,15 @@ enum Session { Loading, SignedOut, SignedIn(SignedIn), Failed(ApiError) }
 operator's poster if it has one) and, once a write has been refused for it,
 the suspension. Its `Debug` shows the token as `[REDACTED]`.
 
-- **Fetched once per page.** The component that draws the session calls
-  `session::use_session_provider()`, which puts a `SessionHandle` in Dioxus
-  context and fetches `GET /agora/api/portal/session` in an effect, after
-  the first render (never while rendering, which hydration needs). Nothing
-  else fetches it. Not mounted yet: see
+- **Provided at the root, fetched once per page.** `session::provide`
+  puts one `SessionHandle` in the island's root context (`island_dom`,
+  `src/main.rs`). The first component to read it starts
+  `GET /agora/api/portal/session`, in an effect after the first render
+  (never while rendering, which hydration needs); a page that reads it
+  nowhere fetches nothing. Not drawn yet: see
   [the session line](#the-session-line-a-client-only-slot).
-- **Read anywhere below** with `session::use_session().get()`, which
-  subscribes the component to changes.
+- **Read anywhere in the island** with `session::use_session().get()`,
+  which subscribes the component to changes.
 - **Not taken away by a hiccup.** A refresh replaces a signed-in state
   only with a 200 or a 401; offline or a 5xx leaves it as it was. From
   `Failed` the line offers "Try again" (`SessionHandle::refresh()`); from
@@ -211,8 +212,10 @@ scripts, which the page's CSP refuses.
   root, `ui::feed::FeedIsland`, rendered from a `FeedPage` with the
   markers dioxus-web's hydration reads (`data-node-hydration`,
   `<!--node-id…-->`, `<!--placeholder…-->`);
-- before it, and before anything user-supplied in the page, the data the
-  root was drawn from: `<script type="application/json"
+- before it, the data the root was drawn from (**the server must place the
+  block before any user-supplied markup**: the client finds it by id, and
+  markup earlier in the page could otherwise open an element that swallows
+  or shadows it): `<script type="application/json"
   id="agora-app-data">` (agentkit `island::DATA_ID`), JSON with `<`, `>`,
   `&`, U+2028 and U+2029 escaped, stamped with the agentkit version that
   drew the markup (`island::script_element`). No browser runs it, so the
@@ -232,26 +235,34 @@ The release build (`scripts/build.sh`, `--features hydrate`; `src/mount.rs`):
 2. sets the two `window` globals dioxus-web's hydration reads and
    dioxus-fullstack would have set inline (`initial_dioxus_hydration_data`
    = base64 of CBOR `[]`, `hydrate_queue` = `[]`);
-3. launches `FeedIsland` with those props and a `Reload<FeedLoad>` in
-   context (the Refresh button's fetch), and dioxus-web adopts the
-   server's nodes. Nothing is fetched on load.
+3. launches `FeedIsland` with those props, a `Reload<FeedLoad>` (the
+   Refresh button's fetch) and the session in root context (`island_dom`
+   in `src/main.rs`, the one function both the launch and the host test
+   use), and dioxus-web adopts the server's nodes. Nothing is fetched on
+   load.
 
 **When it can't hydrate, it doesn't launch.** A hydrating build can't mount
 fresh at run time (dioxus-web hydrates every launch with the feature on),
 so the server's markup stays as the static page it is for readers without
-JavaScript: links work, buttons don't. One console warning says why.
+JavaScript: links work, and the island's buttons, which would do nothing,
+are disabled. One console warning says why. There is deliberately no
+fresh-mount fallback in the release build.
 
-- No data block, or one that isn't readable JSON of this island: nothing
-  else is tried.
+- No data block, one that isn't readable JSON of this island, an empty
+  or missing `#agora-app` (nothing to adopt), or the hydration globals
+  couldn't be set: nothing else is tried.
 - A block from another agentkit (`IslandError::Version`: the page and the
   client come from different builds, a deploy or a cache in between): the
-  page reloads **once** to get the client the server now has. The guard is
-  one `sessionStorage` entry, `agora-web.reloaded-for`, naming the two
-  versions; a load that finds the same pair there stays static, and
-  without storage (private mode, blocked) there is no reload at all. A
-  successful hydration clears it. This is deliberately simple: at most one
-  reload per pair of versions per tab, and never one that can't be
-  remembered.
+  page reloads **once** to get the client the server now has. It is a
+  plain `location.reload()`, not a cache-busting one: it gets the current
+  client because agora-server serves the bundle `no-cache` with an `ETag`.
+  The guard is one `sessionStorage` entry, `agora-web.reloaded-for`
+  (naming the two versions, for whoever looks); while it is there no load
+  reloads, whatever versions it finds, so two server generations behind
+  one origin can't alternate forever. Without readable storage (private
+  mode, blocked) there is no reload at all, and the page reloads only once
+  the entry is written. A successful hydration clears it. Deliberately
+  simple: at most one reload per tab until a hydration succeeds.
 
 The dev build (`scripts/build.sh --dev`, which `scripts/dev.sh` serves,
 and `dx serve`) has no `hydrate`: it empties `#agora-app` and mounts the
@@ -293,15 +304,20 @@ the first client render and filled by an effect. agentkit 0.162.0's
 doesn't work either: with `hydrate` on, every root hydrates, and a second
 one would need server markup the server can't draw. So `src/session.rs`
 (state, writes, view, and its bootstrap in an effect) is built and tested
-on the host but not mounted, until agentkit's root has a client-only slot
-this crate fills with `session::SessionStatus`.
+on the host but not drawn, until agentkit's root has a client-only slot
+this crate fills with `session::SessionStatus`. The session itself is
+provided at the root (`session::provide` in `island_dom`), not by the
+slot's component, so any component in the island can read it; the first
+reader to mount starts the bootstrap, in an effect.
 
 ### How to test it
 
-- Here, on the host: `cargo test` (`src/mount.rs`: the server's block
-  hydrates with the props it was written from and draws the server's
-  markup, a hostile title included; a missing, unreadable or other-version
-  block stays, and the reload guard reloads at most once per pair).
+- Here, on the host: `cargo test`. `src/main.rs`: the `VirtualDom` the
+  client launches (`island_dom`, root and contexts) first renders exactly
+  the server's markup for the same props, in every state the server draws.
+  `src/mount.rs`: the server's block, hostile title included, hydrates
+  into that same markup; a missing, unreadable or other-version block
+  stays; the guard reloads at most once, alternating versions included.
 - In a browser: agora's `just browser-test` (`tests/browser_island.rs`
   there) builds this client and a server that pre-renders, and checks in
   Chromium that the posts are in the HTML before any wasm runs, that the
@@ -312,6 +328,12 @@ this crate fills with `session::SessionStatus`.
   which is how to see that it tells the two apart.
 
 ## Building
+
+`scripts/build.sh` remaps the source paths compiled into the wasm (panic
+locations) to fixed prefixes (`/cargo`, `/rustc-sysroot`, `/agora-web`):
+no builder's home directory ships, and the same commit builds the same
+paths anywhere. It does so through `CARGO_ENCODED_RUSTFLAGS`, which
+replaces any `RUSTFLAGS` of yours for that build.
 
 ```sh
 just build          # the release build into dist/ (scripts/build.sh)

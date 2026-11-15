@@ -27,6 +27,16 @@ if [ -z "$DEV" ] && ! wasm-opt --version 2>/dev/null | grep -q "^wasm-opt versio
 fi
 
 cd "$ROOT"
+# No builder's path ships: panic locations name source files, which would
+# otherwise carry this machine's home directory (the cargo registry, the
+# toolchain) into the wasm. Remapped to fixed prefixes, so the same commit
+# builds the same paths on any machine. CARGO_ENCODED_RUSTFLAGS (separated
+# by 0x1f, so a path with spaces survives) reaches only the wasm32 crates
+# under --target, not build scripts; it replaces RUSTFLAGS for this build.
+SYSROOT=$(rustc --print sysroot)
+SEP=$(printf '\037')
+CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo${SEP}--remap-path-prefix=$SYSROOT=/rustc-sysroot${SEP}--remap-path-prefix=$ROOT=/agora-web"
+export CARGO_ENCODED_RUSTFLAGS
 if [ -n "$DEV" ]; then
     cargo build --locked --target wasm32-unknown-unknown -p agora-web
     PROFILE_DIR=debug

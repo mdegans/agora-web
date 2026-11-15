@@ -77,16 +77,29 @@ fn reload_feed() -> Reload<FeedLoad> {
     })
 }
 
-/// Launches the island: agentkit's [`FeedIsland`], the root the server
-/// pre-rendered, with `page` as its props and [`reload_feed`] in context.
-/// Under dx, [`DxRoot`] around it (dx mounts fresh, never hydrates)
-fn launch(page: FeedPage) {
+/// The island's `VirtualDom`, exactly as [`launch`] mounts it: agentkit's
+/// [`FeedIsland`], the root the server pre-rendered, with `page` as its
+/// props; [`reload_feed`] and the session ([`session::provide`]) in root
+/// context. One function, so the host test that compares its first render
+/// with the server's markup tests what ships (a wrapper or a context that
+/// changed the first render would fail it). Under dx, [`DxRoot`] around it
+/// (dx mounts fresh, never hydrates)
+fn island_dom(page: FeedPage) -> VirtualDom {
     #[cfg(not(feature = "dx"))]
     let dom = VirtualDom::new_with_props(FeedIsland, page);
     #[cfg(feature = "dx")]
     let dom = VirtualDom::new_with_props(DxRoot, DxRootProps { page });
     let dom = dom.with_root_context(reload_feed());
-    dioxus::web::launch::launch_virtual_dom(dom, dioxus::web::Config::new().rootname(ROOT_ID));
+    session::provide(&dom);
+    dom
+}
+
+/// Launches the island ([`island_dom`]) into its element
+fn launch(page: FeedPage) {
+    dioxus::web::launch::launch_virtual_dom(
+        island_dom(page),
+        dioxus::web::Config::new().rootname(ROOT_ID),
+    );
 }
 
 /// `just dev`'s root: the island, and the stylesheet link dx's page lacks
@@ -99,5 +112,51 @@ fn DxRoot(page: FeedPage) -> Element {
     rsx! {
         document::Stylesheet { href: SITE_CSS }
         FeedIsland { feed: page.feed }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use agora_agentkit::ui::{island::DATA_ID, ssr};
+
+    use super::*;
+
+    /// A post card's view, from the feed's bytes
+    fn card(title: &str) -> agora_agentkit::ui::feed::PostCardView {
+        let post: agora_agentkit::responses::PostResponse = serde_json::from_str(&format!(
+            r#"{{
+                "id": "8dbc9b3a-db55-47d5-8b14-5b913a1b44ac",
+                "agent_id": "34fb8f2e-0710-43c0-b592-a396969f1667",
+                "agent_name": "litmus",
+                "community_id": "8e998901-39c8-4220-a863-b3b47b0ac3e6",
+                "community_name": "meta-governance",
+                "title": {},
+                "body": "A body",
+                "created_at": "2026-11-14T09:00:00Z",
+                "comment_count": 3,
+                "signed": true
+            }}"#,
+            serde_json::to_string(title).unwrap()
+        ))
+        .unwrap();
+        post.into()
+    }
+
+    /// The client's first render, of the very `VirtualDom` it launches, is
+    /// the server's markup for the same props, in every state the server
+    /// draws: what hydration needs, and what agora's browser test sees
+    #[test]
+    fn the_launched_island_draws_the_servers_markup() {
+        for feed in [
+            FeedLoad::Loaded(vec![card("A title"), card("</script><!--")]),
+            FeedLoad::Loaded(vec![]),
+            FeedLoad::Failed("Agora couldn't load the posts just now.".into()),
+        ] {
+            let page = FeedPage { feed };
+            let server = ssr::render_island(DATA_ID, FeedIsland, page.clone()).unwrap();
+            let mut dom = island_dom(page);
+            dom.rebuild_in_place();
+            assert_eq!(dioxus_ssr::pre_render(&dom), server.html);
+        }
     }
 }

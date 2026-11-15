@@ -72,6 +72,9 @@ agentkit-patch:
     mkdir -p .cargo
     printf '%s\n' "# Written by \`just agentkit-patch\`; \`just agentkit-unpatch\` removes it." \
         '[patch.crates-io]' 'agora-agentkit = { path = "agentkit" }' > .cargo/config.toml
+    # Point the lockfile at it: until then cargo keeps the locked crates.io
+    # version and lists the checkout under [[patch.unused]]
+    cargo update -p agora-agentkit
     echo "patched: agora-agentkit from ./agentkit ($(grep -m1 '^version' agentkit/Cargo.toml)); \`just agentkit-unpatch\` to undo"
 
 # Undo `just agentkit-patch`: remove its config and restore Cargo.lock

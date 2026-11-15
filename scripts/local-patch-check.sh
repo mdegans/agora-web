@@ -22,6 +22,12 @@ if ! awk '
     exit 1
 fi
 
+# A patch cargo couldn't use is recorded in the lockfile too
+if grep -q '^\[\[patch.unused\]\]' Cargo.lock; then
+    echo "error: Cargo.lock lists an unused [patch]; $HOW" >&2
+    exit 1
+fi
+
 # What cargo resolves now, with every config file it reads (this checkout's
 # .cargo/, its parents', CARGO_HOME's). --locked: a patch the lockfile
 # doesn't record fails here rather than rewriting it.

@@ -7,6 +7,10 @@ members = [
     # Guard: fails resolution if openssl-sys enters the graph (rustls only).
     "crates/no-openssl",
 ]
+# A local agentkit checkout for `just agentkit-patch` (README, "Editing
+# shared components"; gitignored). Not a member: excluded so cargo commands
+# run inside it don't take it for part of this workspace.
+exclude = ["agentkit"]
 
 [workspace.package]
 edition = "2024"

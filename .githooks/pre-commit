@@ -1,0 +1,11 @@
+#!/bin/sh
+# Versioned pre-commit hook (`just install-hooks` sets core.hooksPath to
+# .githooks). Runs `just check-fast`: formatting, clippy for the host and
+# wasm32, and the local-patch check. Tests and builds are `just check`, which
+# CI runs; this stays fast so it never tempts anyone to skip it.
+set -eu
+if ! command -v just >/dev/null; then
+    echo "pre-commit: needs just (https://just.systems); or commit with --no-verify and run the checks yourself" >&2
+    exit 1
+fi
+exec just check-fast

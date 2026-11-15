@@ -65,37 +65,11 @@ local-patch-check:
 # shared components"). Never commit with it on: `just check` refuses.
 [doc("Build against ./agentkit (a local agora-agentkit) so shared components hot-reload")]
 agentkit-patch:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    [ -f agentkit/Cargo.toml ] || { echo "error: no ./agentkit/Cargo.toml; put an agora-agentkit checkout there first (README, \"Editing shared components\")" >&2; exit 1; }
-    [ ! -e .cargo/config.toml ] || { echo "error: .cargo/config.toml already exists; add the patch to it by hand or move it aside" >&2; exit 1; }
-    mkdir -p .cargo
-    printf '%s\n' "# Written by \`just agentkit-patch\`; \`just agentkit-unpatch\` removes it." \
-        '[patch.crates-io]' 'agora-agentkit = { path = "agentkit" }' > .cargo/config.toml
-    # Point the lockfile at it: until then cargo keeps the locked crates.io
-    # version and lists the checkout under [[patch.unused]]
-    cargo update -p agora-agentkit
-    echo "patched: agora-agentkit from ./agentkit ($(grep -m1 '^version' agentkit/Cargo.toml)); \`just agentkit-unpatch\` to undo"
+    scripts/agentkit-patch.sh on
 
 # Undo `just agentkit-patch`: remove its config and restore Cargo.lock
 agentkit-unpatch:
-    #!/usr/bin/env bash
-    set -euo pipefail
-    if [ -f .cargo/config.toml ]; then
-        head -1 .cargo/config.toml | grep -q '^# Written by `just agentkit-patch`' \
-            || { echo "error: .cargo/config.toml wasn't written by agentkit-patch; edit it by hand" >&2; exit 1; }
-        rm .cargo/config.toml
-        rmdir .cargo 2>/dev/null || true
-    fi
-    # dx serve rewrote the lockfile for the patch. Kept aside first, in case
-    # it held another change of yours.
-    if ! git diff --quiet -- Cargo.lock; then
-        mkdir -p target
-        cp Cargo.lock target/Cargo.lock.before-unpatch
-        git checkout -- Cargo.lock
-        echo "restored Cargo.lock (the patched one is in target/Cargo.lock.before-unpatch)"
-    fi
-    scripts/local-patch-check.sh && echo "unpatched: agora-agentkit from crates.io"
+    scripts/agentkit-patch.sh off
 
 # Install the build tools and `just dev`'s (dx, esbuild) into ~/.local/bin
 install-tools:

@@ -211,6 +211,10 @@ just install-tools        # into ~/.local/bin, which must be on PATH
 just install-hooks        # pre-commit runs `just check-fast`
 ```
 
+`just install-hooks` sets `core.hooksPath` to `.githooks`, so git stops
+running anything in `.git/hooks` for this clone; move a hook of your own
+into `.githooks/` locally (or unset `core.hooksPath`) if you rely on one.
+
 `just install-tools` installs, each at the version `just dev` and
 `scripts/build.sh` check for:
 
@@ -233,8 +237,8 @@ its submodules, `just dev` there (agora's `docs/dev-environment.md`).
 In VS Code, open this folder and accept the recommended extensions
 (rust-analyzer, Dioxus, Even Better TOML, just). `.vscode/settings.json`
 formats on save and makes rust-analyzer's check on save run clippy for both
-targets: the host for the whole workspace, then wasm32 for the client
-(`scripts/ra-check.sh`), so an error only the browser build has still shows
+targets: the host for the whole workspace, then wasm32 for the client with
+the `dx` feature (`scripts/ra-check.sh`), so an error only the browser build has still shows
 in the editor. Analysis itself is on the host, where everything compiles;
 only the few `cfg(target_arch = "wasm32")` lines show as inactive.
 rust-analyzer uses its own target directory, so it never waits on `just
@@ -415,12 +419,15 @@ just agentkit-unpatch     # when done: removes that file, restores Cargo.lock
 
 `agentkit/` and `.cargo/config.toml` are gitignored, and the workspace
 excludes `agentkit` (so cargo inside it doesn't take it for a member here).
-The checkout's version must still satisfy this workspace's requirement
-(`0.161.x` for `0.161.0`); a new minor version means bumping the requirement
-locally too. A patch alone isn't enough: until the lockfile is updated, cargo
-keeps the locked crates.io version and lists the checkout under
-`[[patch.unused]]`, and the page runs crates.io's code (which is why
-`agentkit-patch` runs `cargo update -p agora-agentkit`). **The patch never ships**: `just check` (CI) and `just
+The checkout's version must satisfy this workspace's requirement (for
+`0.162.0`, any `0.162.x`); a new minor version means bumping the
+requirement locally too. A patch alone isn't enough: until the lockfile is
+updated, cargo keeps the locked crates.io version and lists the checkout
+under `[[patch.unused]]`, and the page runs crates.io's code. So
+`agentkit-patch` runs `cargo update -p agora-agentkit`, then checks with
+`cargo metadata` that agentkit now resolves to `./agentkit`; if it doesn't,
+it removes the config, restores the lockfile and says which version to
+check out. **The patch never ships**: `just check` (CI) and `just
 check-fast` (the pre-commit hook) start with `scripts/local-patch-check.sh`,
 which fails while agentkit resolves to anything but crates.io, or while
 `Cargo.lock` names anything else or lists an unused patch.

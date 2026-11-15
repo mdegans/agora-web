@@ -2,8 +2,11 @@
 # Builds the release client into OUT_DIR (default dist/): the wasm32 build,
 # wasm-bindgen (`--target web`), wasm-opt, and the loader. The one recipe
 # for every build: this repo's CI, agora's Docker stage and `just web-build`.
+# The release client hydrates the island agora-server pre-renders (the
+# `hydrate` feature; README, "Server rendering and hydration").
 # `--dev` builds the dev bundle scripts/dev.sh serves instead: Cargo's dev
-# profile (unoptimized, so a rebuild takes seconds) and no wasm-opt.
+# profile (unoptimized, so a rebuild takes seconds), no wasm-opt, and no
+# `hydrate`: it mounts fresh over the upstream's markup.
 # Usage: scripts/build.sh [--dev] [OUT_DIR]
 # Install the tools first with scripts/install-tools.sh.
 set -eu
@@ -24,11 +27,21 @@ if [ -z "$DEV" ] && ! wasm-opt --version 2>/dev/null | grep -q "^wasm-opt versio
 fi
 
 cd "$ROOT"
+# No builder's path ships: panic locations name source files, which would
+# otherwise carry this machine's home directory (the cargo registry, the
+# toolchain) into the wasm. Remapped to fixed prefixes, so the same commit
+# builds the same paths on any machine. CARGO_ENCODED_RUSTFLAGS (separated
+# by 0x1f, so a path with spaces survives) reaches only the wasm32 crates
+# under --target, not build scripts; it replaces RUSTFLAGS for this build.
+SYSROOT=$(rustc --print sysroot)
+SEP=$(printf '\037')
+CARGO_ENCODED_RUSTFLAGS="--remap-path-prefix=${CARGO_HOME:-$HOME/.cargo}=/cargo${SEP}--remap-path-prefix=$SYSROOT=/rustc-sysroot${SEP}--remap-path-prefix=$ROOT=/agora-web"
+export CARGO_ENCODED_RUSTFLAGS
 if [ -n "$DEV" ]; then
     cargo build --locked --target wasm32-unknown-unknown -p agora-web
     PROFILE_DIR=debug
 else
-    cargo build --release --locked --target wasm32-unknown-unknown -p agora-web
+    cargo build --release --locked --target wasm32-unknown-unknown -p agora-web --features hydrate
     PROFILE_DIR=release
 fi
 

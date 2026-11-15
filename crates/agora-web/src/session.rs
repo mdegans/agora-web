@@ -1,10 +1,20 @@
 //! Who is signed in: the portal session, as the UI reads it.
 //!
-//! **One fetch per page.** The island's root ([`crate::App`]) calls
-//! [`use_session_provider`] once; it puts a [`SessionHandle`] in Dioxus
-//! context and fetches the bootstrap (`GET /agora/api/portal/session`) when
-//! the root mounts. Every other component reads it with [`use_session`] and
-//! never fetches it itself. It is fetched again only when asked
+//! **Drawn in a client-only slot.** Who is signed in is client-only
+//! state: the server can't draw it, so it is drawn in agentkit's
+//! `ClientOnly` slot, empty on the server and in the first client render
+//! and filled after mount ([`SessionStatus`], from `crate::session_line`;
+//! README, "Server rendering and hydration").
+//!
+//! **Provided at the root, fetched once per page.** [`provide`] puts one
+//! [`SessionHandle`] in the island's root context (`crate::island_dom`),
+//! so every component in the island reads the same one with
+//! [`use_session`], wherever it is drawn: a slot's line, a compose form.
+//! The first reader to mount starts the bootstrap
+//! (`GET /agora/api/portal/session`) in an effect, after the first render:
+//! never while rendering, so the first render is the same with or without a
+//! fetch (what hydration needs), and a page that draws no reader fetches
+//! nothing. It is fetched again only when asked
 //! ([`SessionHandle::refresh`], the "Try again" after a failure), or when a
 //! write's refusal says the session may have changed. Should a page ever
 //! host two islands, each root fetches its own.
@@ -216,7 +226,7 @@ impl Session {
 /// like the signals it holds.
 ///
 /// The signals are owned by the root scope, as the refresh task that
-/// writes them runs there (`spawn_forever`); owned by `App`, a scope below
+/// writes them runs there (`spawn_forever`); owned by a scope below
 /// it, every write from the task would log dioxus's hoisting warning in a
 /// debug build.
 #[derive(Clone, Copy, PartialEq)]
@@ -327,18 +337,26 @@ impl SessionHandle {
     }
 }
 
-/// Provides the session to everything below, and fetches the bootstrap
-/// once, when the calling component mounts. Call it once, in the island's
-/// root.
-pub fn use_session_provider() -> SessionHandle {
-    let handle = use_context_provider(SessionHandle::new_root);
-    use_hook(|| handle.refresh());
-    handle
+/// Puts the session in `dom`'s root context, loading, for every component
+/// in the island ([`use_session`]); nothing is fetched until one reads it
+pub fn provide(dom: &VirtualDom) {
+    dom.in_scope(ScopeId::ROOT, || {
+        provide_context(SessionHandle::new_root());
+    });
 }
 
-/// The session, from the root's [`use_session_provider`]
+/// The session, from the root's [`provide`]. The first reader to mount
+/// starts the bootstrap, in an effect, after the first render; a later one
+/// finds it started (its generation moved) and starts nothing
 pub fn use_session() -> SessionHandle {
-    use_context()
+    let handle: SessionHandle = use_context();
+    // Reads with `peek`, so it subscribes to nothing and runs once
+    use_effect(move || {
+        if *handle.generation.peek() == 0 {
+            handle.refresh();
+        }
+    });
+    handle
 }
 
 /// The sign-in page, returning to `return_to` (a path on this site) after
@@ -846,20 +864,67 @@ mod tests {
     /// at loading (the render to a string doesn't poll the fetch it spawns)
     #[test]
     fn the_root_provides_one_session() {
-        #[component]
-        fn Root() -> Element {
-            use_session_provider();
-            rsx! {
-                SessionStatus {}
-                SessionStatus {}
-            }
-        }
-        let html = dioxus_ssr::render_element(rsx! { Root {} });
+        let mut dom = two_readers();
+        dom.rebuild_in_place();
+        let html = dioxus_ssr::render(&dom);
         assert_eq!(
             html.matches("Checking who is signed in…").count(),
             2,
             "{html}"
         );
+    }
+
+    /// A root with the session provided as `crate::island_dom` provides it,
+    /// and two readers in different places
+    fn two_readers() -> VirtualDom {
+        #[component]
+        fn Root() -> Element {
+            rsx! {
+                SessionStatus {}
+                div { SessionStatus {} }
+            }
+        }
+        let dom = VirtualDom::new(Root);
+        provide(&dom);
+        dom
+    }
+
+    /// The bootstrap is fetched after the first render, not during it: the
+    /// first render (the one hydration adopts) draws "loading" and has
+    /// started no refresh; then one refresh starts, whatever the number of
+    /// readers, and never again on its own
+    #[test]
+    fn the_bootstrap_starts_after_the_first_render() {
+        let mut dom = two_readers();
+        dom.rebuild_in_place();
+        let handle = dom.in_scope(ScopeId::ROOT, consume_context::<SessionHandle>);
+        let generation =
+            |dom: &VirtualDom| dom.in_scope(ScopeId::ROOT, || *handle.generation.peek());
+        assert_eq!(generation(&dom), 0, "a refresh started while rendering");
+        assert!(dioxus_ssr::render(&dom).contains("Checking who is signed in…"));
+        // The effects, then the refresh one of them spawned (which fails on
+        // the host)
+        dom.render_immediate(&mut dioxus::dioxus_core::NoOpMutations);
+        dom.process_events();
+        assert_eq!(generation(&dom), 1);
+        dom.render_immediate(&mut dioxus::dioxus_core::NoOpMutations);
+        dom.process_events();
+        assert_eq!(generation(&dom), 1, "an effect ran again");
+    }
+
+    /// A page that draws no reader fetches nothing
+    #[test]
+    fn no_reader_no_fetch() {
+        fn empty() -> Element {
+            rsx! {}
+        }
+        let mut dom = VirtualDom::new(empty);
+        provide(&dom);
+        dom.rebuild_in_place();
+        dom.render_immediate(&mut dioxus::dioxus_core::NoOpMutations);
+        dom.process_events();
+        let handle = dom.in_scope(ScopeId::ROOT, consume_context::<SessionHandle>);
+        assert_eq!(dom.in_scope(ScopeId::ROOT, || *handle.generation.peek()), 0);
     }
 
     // The handle, driven in a `VirtualDom` on the host. `process_events`

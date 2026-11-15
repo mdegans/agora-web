@@ -653,3 +653,21 @@ details > summary {
     .hero h1 { font-size: 1.5rem; }
     .gov-entry { flex-direction: column; gap: 0.5rem; }
 }
+
+/* The island's session slot (agentkit's `ClientOnly`, first in the island):
+ * empty on the server and in the client's first render, then who is signed
+ * in and which client this is (agora-web src/main.rs, `session_line`). Its
+ * space is reserved as padding until it appears and is then its own
+ * min-height, so the feed below doesn't move when it fills in. Only with
+ * scripting on: without it the slot never fills, and nothing is reserved. */
+@media (scripting: enabled) {
+    #agora-app { padding-top: 3.5rem; }
+    #agora-app:has(> .session-slot) { padding-top: 0; }
+}
+.session-slot {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 0.25rem;
+    min-height: 3.5rem;
+}

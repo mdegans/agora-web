@@ -7,8 +7,17 @@ edition.workspace = true
 repository.workspace = true
 
 [dependencies]
-agora-agentkit = { workspace = true }
+# `dioxus`: the shared components (the island's root, `ui::feed::FeedIsland`),
+# the one copy agora-server pre-renders too (agentkit's `dioxus-ssr`)
+agora-agentkit = { workspace = true, features = ["dioxus"] }
 dioxus = { workspace = true }
+# Only for the `hydrate` feature: dioxus-web's own, which the `dioxus`
+# umbrella turns on only with dioxus-fullstack. Exact, as agentkit pins
+# dioxus: the hydration format is Dioxus-internal (README, "Server rendering
+# and hydration"). Already in the graph through `dioxus`; the feature adds
+# dioxus-fullstack-core (the hydration context's types, not fullstack's
+# server) and its CBOR, both already in Cargo.lock.
+dioxus-web = { version = "=0.7.10", default-features = false, optional = true, features = ["hydrate"] }
 # All already in the graph through agentkit and dioxus-web. reqwest uses the
 # browser's fetch on wasm32; no TLS of its own there (and no OpenSSL anywhere).
 reqwest = { version = "0.12", default-features = false, features = [] }
@@ -22,9 +31,15 @@ url = "2"
 # `Window` and `Location` for the page's origin (src/api.rs). dioxus-web
 # 0.7.10 needs `Location` too but gets it only through its `devtools`
 # feature, which the workspace turns off (Cargo.toml).
-web-sys = { version = "0.3", features = ["Location", "Window"] }
+# `Document`, `Element`, `Node`, `Storage` and `console` for reading the
+# page's data block, its one guarded reload and a static page's disabled
+# buttons (src/mount.rs).
+web-sys = { version = "0.3", features = ["Document", "Element", "Location", "Node", "NodeList", "Storage", "Window", "console"] }
 
 [dev-dependencies]
+# agentkit's pre-render, so the host tests draw what agora-server draws
+# (src/mount.rs)
+agora-agentkit = { workspace = true, features = ["dioxus-ssr"] }
 # Renders components to a string, so what a component draws for each state
 # is tested on the host (src/session.rs)
 dioxus-ssr = "0.7"
@@ -35,3 +50,8 @@ dioxus-ssr = "0.7"
 # adds for itself (src/main.rs). Off by default, so scripts/build.sh (release
 # and --dev) never compiles it. Never enable it in a build that ships.
 dx = ["dioxus/devtools"]
+# Adopt the server's pre-rendered island instead of mounting fresh: the
+# release build (scripts/build.sh). Without it (`--dev`) the client clears
+# the island's element and mounts fresh. A hydrating build can't mount fresh
+# at run time: dioxus-web hydrates every launch when the feature is on.
+hydrate = ["dep:dioxus-web"]

@@ -9,19 +9,28 @@
 //! build and serves it under `/agora/app/assets/`; see the README ("Server
 //! rendering and hydration", and the pipeline).
 //!
+//! Every island is a page (agentkit's `ui::page::Page`: a feed or a
+//! thread), drawn by one root, `PageIsland`; see the README, "Pages".
+//!
 //! Two builds ([`mount`]): the release build (`hydrate` feature,
 //! `scripts/build.sh`) hydrates, and stays off a page it can't hydrate; the
 //! dev build (`scripts/build.sh --dev`) clears the island's element and
-//! mounts fresh, loading the feed itself.
+//! mounts fresh, loading the page its address names itself.
 //!
 //! This crate keeps what is the client's alone: fetching ([`api`]), who is
 //! signed in ([`session`]) and mounting ([`mount`]). What is drawn is
 //! agentkit's.
 
-use agora_agentkit::ui::{
-    ClientSlot, ClientSlots, Reload,
-    feed::{FeedIsland, FeedLoad, FeedPage},
-    island::{AGENTKIT_VERSION, ROOT_ID},
+use agora_agentkit::{
+    ids::PostId,
+    requests::GetFeedInput,
+    ui::{
+        ClientSlot, ClientSlots, Reload,
+        feed::FeedLoad,
+        island::{AGENTKIT_VERSION, ROOT_ID},
+        page::{Page, PageIsland},
+        thread::ThreadLoad,
+    },
 };
 use dioxus::prelude::*;
 
@@ -63,13 +72,14 @@ fn main() {
     mount::fresh();
 }
 
-/// The feed island's [`Reload`]: the page of the feed the server drew,
-/// fetched again (the Refresh and Try again buttons, and a fresh mount's
-/// first load)
-fn reload_feed() -> Reload<FeedLoad> {
-    Reload::new(|| {
-        Box::pin(async {
-            match api::feed(&FeedPage::input()).await {
+/// A feed page's [`Reload`]: the page of the feed the server drew (its
+/// `input`: the community, sort and offset), fetched again. The Refresh and
+/// Try again links, and a fresh mount's first load
+fn reload_feed(input: GetFeedInput) -> Reload<FeedLoad> {
+    Reload::new(move || {
+        let input = input.clone();
+        Box::pin(async move {
+            match api::feed(&input).await {
                 Ok(posts) => posts.into_iter().collect(),
                 Err(e) => FeedLoad::Failed(e.to_string()),
             }
@@ -77,30 +87,63 @@ fn reload_feed() -> Reload<FeedLoad> {
     })
 }
 
+/// A thread page's [`Reload`]: the post with its comments, read as the
+/// server's page reads it ([`api::thread`]). Try again, and a fresh mount's
+/// first load
+fn reload_thread(post: PostId) -> Reload<ThreadLoad> {
+    Reload::new(move || {
+        Box::pin(async move {
+            match api::thread(post).await {
+                Ok(read) => ThreadLoad::Loaded(Box::new(read)),
+                Err(e) => ThreadLoad::Failed(e.to_string()),
+            }
+        })
+    })
+}
+
 /// The island's `VirtualDom`, exactly as [`launch`] mounts it: agentkit's
-/// [`FeedIsland`], the root the server pre-rendered, with `page` as its
-/// props; [`reload_feed`], the client-only slots ([`session_line`]) and
-/// the session ([`session::provide`]) in root context. One function, so the host test that compares its first render
-/// with the server's markup tests what ships (a wrapper or a context that
-/// changed the first render would fail it). Under dx, [`DxRoot`] around it
-/// (dx mounts fresh, never hydrates)
-fn island_dom(page: FeedPage) -> VirtualDom {
+/// [`PageIsland`], the root the server pre-rendered, with `page` as its
+/// props; the page's [`Reload`] ([`reload_feed`] or [`reload_thread`], by
+/// the page's kind), the client-only slots and the session
+/// ([`session::provide`]) in root context. One function, so the host test
+/// that compares its first render with the server's markup tests what ships
+/// (a wrapper or a context that changed the first render would fail it).
+/// Under dx, [`DxRoot`] around it (dx mounts fresh, never hydrates).
+///
+/// Slots: [`ClientSlot::Session`] draws [`session_line`].
+/// [`ClientSlot::Reply`] (under a thread's post and each comment) is left
+/// empty until compose (plan step 6): agentkit draws an unfilled slot as an
+/// empty placeholder, before and after mount, so it draws nothing and moves
+/// nothing (tested below)
+fn island_dom(page: Page) -> VirtualDom {
+    let reload = match &page {
+        Page::Feed(feed) => Reloads::Feed(reload_feed(feed.input.clone())),
+        Page::Thread(thread) => Reloads::Thread(reload_thread(thread.post)),
+    };
     #[cfg(not(feature = "dx"))]
-    let dom = VirtualDom::new_with_props(FeedIsland, page);
+    let dom = VirtualDom::new_with_props(PageIsland, page);
     #[cfg(feature = "dx")]
     let dom = VirtualDom::new_with_props(DxRoot, DxRootProps { page });
-    let dom = dom
-        .with_root_context(reload_feed())
-        .with_root_context(ClientSlots::new().with(ClientSlot::Session, session_line));
+    let dom = match reload {
+        Reloads::Feed(reload) => dom.with_root_context(reload),
+        Reloads::Thread(reload) => dom.with_root_context(reload),
+    }
+    .with_root_context(ClientSlots::new().with(ClientSlot::Session, session_line));
     session::provide(&dom);
     dom
+}
+
+/// The one [`Reload`] a page's root reads, by the page's kind
+enum Reloads {
+    Feed(Reload<FeedLoad>),
+    Thread(Reload<ThreadLoad>),
 }
 
 /// This client's version
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What the island's session slot draws once mounted (agentkit's
-/// `ClientOnly`, first in `FeedIsland`; empty on the server and in the
+/// `ClientOnly`, first in every page's root; empty on the server and in the
 /// first render): who is signed in, and which client this is
 ///
 /// In a `.session-slot`, whose height `assets/site.css` reserves before it
@@ -117,7 +160,7 @@ fn session_line() -> Element {
 }
 
 /// Launches the island ([`island_dom`]) into its element
-fn launch(page: FeedPage) {
+fn launch(page: Page) {
     dioxus::web::launch::launch_virtual_dom(
         island_dom(page),
         dioxus::web::Config::new().rootname(ROOT_ID),
@@ -130,12 +173,17 @@ fn launch(page: FeedPage) {
 /// the shared root, unwrapped, which is what hydration needs
 #[cfg(feature = "dx")]
 #[component]
-fn DxRoot(page: FeedPage) -> Element {
+fn DxRoot(page: Page) -> Element {
     rsx! {
         document::Stylesheet { href: SITE_CSS }
-        FeedIsland { feed: page.feed }
+        // `PageIsland` has no hooks of its own (it picks the page's root,
+        // which is a component), so it can be called here
+        {PageIsland(page)}
     }
 }
+
+#[cfg(test)]
+mod test_pages;
 
 #[cfg(test)]
 mod tests {
@@ -143,68 +191,79 @@ mod tests {
 
     use super::*;
 
-    /// A post card's view, from the feed's bytes
-    fn card(title: &str) -> agora_agentkit::ui::feed::PostCardView {
-        let post: agora_agentkit::responses::PostResponse = serde_json::from_str(&format!(
-            r#"{{
-                "id": "8dbc9b3a-db55-47d5-8b14-5b913a1b44ac",
-                "agent_id": "34fb8f2e-0710-43c0-b592-a396969f1667",
-                "agent_name": "litmus",
-                "community_id": "8e998901-39c8-4220-a863-b3b47b0ac3e6",
-                "community_name": "meta-governance",
-                "title": {},
-                "body": "A body",
-                "created_at": "2026-11-14T09:00:00Z",
-                "comment_count": 3,
-                "signed": true
-            }}"#,
-            serde_json::to_string(title).unwrap()
-        ))
-        .unwrap();
-        post.into()
-    }
-
     /// The client's first render, of the very `VirtualDom` it launches, is
-    /// the server's markup for the same props, in every state the server
-    /// draws: what hydration needs, and what agora's browser test sees
+    /// the server's markup for the same page, for every kind and state the
+    /// server draws: what hydration needs, and what agora's browser test
+    /// sees
     #[test]
     fn the_launched_island_draws_the_servers_markup() {
-        for feed in [
-            FeedLoad::Loaded(vec![card("A title"), card("</script><!--")]),
-            FeedLoad::Loaded(vec![]),
-            FeedLoad::Failed("Agora couldn't load the posts just now.".into()),
-        ] {
-            let page = FeedPage { feed };
-            let server = ssr::render_island(DATA_ID, FeedIsland, page.clone()).unwrap();
-            let mut dom = island_dom(page);
+        for page in test_pages::all() {
+            let server = ssr::render_island(DATA_ID, PageIsland, page.clone()).unwrap();
+            let mut dom = island_dom(page.clone());
             dom.rebuild_in_place();
-            assert_eq!(dioxus_ssr::pre_render(&dom), server.html);
+            assert_eq!(dioxus_ssr::pre_render(&dom), server.html, "{page:?}");
         }
     }
 
-    /// After mount the session slot fills in (who is signed in, which
-    /// client), and the feed is still drawn as the server drew it
-    #[test]
-    fn the_session_line_fills_in_after_mount() {
-        let page = FeedPage {
-            feed: FeedLoad::Loaded(vec![card("A title")]),
-        };
-        let mut dom = island_dom(page);
-        dom.rebuild_in_place();
-        let first = dioxus_ssr::render(&dom);
-        assert!(!first.contains("signed in"), "{first}");
-        assert!(!first.contains("Agora web client"), "{first}");
+    /// `dom` after mount: its effects run (the session slot fills in; the
+    /// bootstrap fails on the host, which has no page origin)
+    fn mounted(dom: &mut VirtualDom) -> String {
         for _ in 0..3 {
             dom.render_immediate(&mut dioxus::dioxus_core::NoOpMutations);
             dom.process_events();
         }
-        let after = dioxus_ssr::render(&dom);
-        // On the host the bootstrap fails (no page origin): the failure line
+        dioxus_ssr::render(dom)
+    }
+
+    /// The session line, as `mounted` draws it on the host
+    fn session_line_on_the_host() -> String {
+        let mut dom = VirtualDom::new(session_line);
+        session::provide(&dom);
+        dom.rebuild_in_place();
+        mounted(&mut dom)
+    }
+
+    /// After mount the session slot fills in (who is signed in, which
+    /// client) and nothing else changes: on a thread, the reply slots stay
+    /// empty (compose is a later step), so an unfilled slot draws nothing
+    /// and moves nothing. The whole page after mount is the first render
+    /// with the session line in front
+    #[test]
+    fn only_the_session_line_fills_in_after_mount() {
+        let line = session_line_on_the_host();
         assert!(
-            after.contains("Couldn&#39;t check who is signed in"),
-            "{after}"
+            line.contains("Couldn&#39;t check who is signed in"),
+            "{line}"
         );
-        assert!(after.contains("Agora web client"), "{after}");
-        assert!(after.contains("A title"), "{after}");
+        assert!(line.contains("Agora web client"), "{line}");
+        for page in [test_pages::feed(), test_pages::thread()] {
+            let mut dom = island_dom(page.clone());
+            dom.rebuild_in_place();
+            let first = dioxus_ssr::render(&dom);
+            assert!(!first.contains("Agora web client"), "{first}");
+            let after = mounted(&mut dom);
+            assert_eq!(after, format!("{line}{first}"), "{page:?}");
+        }
+    }
+
+    /// A thread page's reload is the thread's, a feed page's the feed's,
+    /// for the feed the page is (its community, sort and offset): the root
+    /// reads the one its page needs
+    #[test]
+    fn each_page_gets_its_own_reload() {
+        for (page, feed, thread) in [
+            (test_pages::feed(), true, false),
+            (test_pages::community(), true, false),
+            (test_pages::thread(), false, true),
+        ] {
+            let dom = island_dom(page);
+            dom.in_scope(ScopeId::ROOT, || {
+                assert_eq!(try_consume_context::<Reload<FeedLoad>>().is_some(), feed);
+                assert_eq!(
+                    try_consume_context::<Reload<ThreadLoad>>().is_some(),
+                    thread
+                );
+            });
+        }
     }
 }

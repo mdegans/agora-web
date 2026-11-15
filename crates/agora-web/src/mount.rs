@@ -3,9 +3,9 @@
 //!
 //! **The release build** (`hydrate`) reads the page's data block
 //! (`script#agora-app-data[type="application/json"]`, agentkit's
-//! [`island`]) and launches [`FeedIsland`](agora_agentkit::ui::feed::FeedIsland)
-//! with the props the server drew from, so dioxus-web adopts the server's
-//! nodes. It can't mount fresh instead: with the feature on, dioxus-web
+//! [`island`]) as a [`Page`] (which page it is, and the data it was drawn
+//! from) and launches [`PageIsland`](agora_agentkit::ui::page::PageIsland)
+//! with it, so dioxus-web adopts the server's nodes. It can't mount fresh instead: with the feature on, dioxus-web
 //! hydrates every launch. So when the page can't be hydrated ([`plan`]) it
 //! doesn't launch at all, and the server's markup stays as the page it is
 //! for readers without JavaScript (links work; its buttons, which would do
@@ -28,15 +28,24 @@
 //!
 //! **The dev build** (no `hydrate`: `scripts/build.sh --dev`, and dx) runs
 //! under a page whose island an upstream server drew with *its* agentkit,
-//! not necessarily this checkout's. It empties the island's element and
-//! mounts [`FeedLoad::Pending`], which loads the feed through the
+//! not necessarily this checkout's, so it reads neither the markup nor the
+//! data block. It empties the island's element and mounts the page the
+//! address names ([`fresh_page`]: a feed's or a post's site path), not
+//! loaded, which loads itself through the page's
 //! [`Reload`](agora_agentkit::ui::Reload) after the first render.
 
-#[cfg(not(feature = "hydrate"))]
-use agora_agentkit::ui::feed::FeedLoad;
 #[cfg(any(feature = "hydrate", test))]
 use agora_agentkit::ui::island::{self, DATA_ID, IslandError};
-use agora_agentkit::ui::{feed::FeedPage, island::ROOT_ID};
+use agora_agentkit::{
+    ids::{ContentRef, PostId},
+    links::{AgoraLink, ContentKind},
+    ui::{
+        feed::{FeedLoad, FeedPage},
+        island::ROOT_ID,
+        page::Page,
+        thread::{ThreadLoad, ThreadPage},
+    },
+};
 
 /// The `sessionStorage` key of the reload guard: its value is the
 /// `"<page's agentkit> -> <client's agentkit>"` pair last reloaded for
@@ -58,8 +67,9 @@ pub enum Guard {
 #[cfg(any(feature = "hydrate", test))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum Plan {
-    /// Hydrate the server's markup, drawn from these props
-    Hydrate(FeedPage),
+    /// Hydrate the server's markup, drawn from this page (boxed: a page is
+    /// much larger than a warning)
+    Hydrate(Box<Page>),
     /// Leave the page as the server drew it, and say why once. `reload` is
     /// the guard's new value when the page should reload (once) first
     Stay {
@@ -81,8 +91,8 @@ pub fn plan(block: Option<&str>, guard: &Guard) -> Plan {
             reload: None,
         };
     };
-    match island::from_script_text::<FeedPage>(text) {
-        Ok(page) => Plan::Hydrate(page),
+    match island::from_script_text::<Page>(text) {
+        Ok(page) => Plan::Hydrate(Box::new(page)),
         Err(IslandError::Version { page, client }) => {
             let pair = format!("{page} -> {client}");
             // One reload until a hydration succeeds: any entry stops it
@@ -151,7 +161,7 @@ pub fn hydrate() {
                 // reload once again
                 let _ = storage.remove_item(GUARD_KEY);
             }
-            crate::launch(page);
+            crate::launch(*page);
         }
         Plan::Stay { warning, reload } => {
             stay(&warning);
@@ -180,14 +190,25 @@ fn data_block() -> Option<String> {
         .text_content()
 }
 
-/// Not starting: say why, once, and disable the island's buttons, which
-/// would do nothing without the client (a link still works). The page isn't
-/// hydrated, so changing its markup can't misplace anything
+/// Not starting: say why, once, mark the island static (`data-agora-static`,
+/// so the stylesheet reserves no space for a session line that won't come),
+/// and disable its buttons, which would do nothing without the client (a
+/// link still works). The page isn't hydrated, so changing its markup can't
+/// misplace anything
 #[cfg(feature = "hydrate")]
 fn stay(message: &str) {
     use web_sys::wasm_bindgen::JsCast;
     web_sys::console::warn_1(&message.into());
-    let Some(buttons) = root().and_then(|root| root.query_selector_all("button").ok()) else {
+    let Some(root) = root() else {
+        return;
+    };
+    // The session slot will never fill: assets/site.css stops reserving its
+    // space on a page marked so. A failure only costs that space, so it is
+    // said in the console and the page goes on
+    if root.set_attribute("data-agora-static", "").is_err() {
+        web_sys::console::warn_1(&"agora-web: couldn't mark the island static".into());
+    }
+    let Ok(buttons) = root.query_selector_all("button") else {
         return;
     };
     for i in 0..buttons.length() {
@@ -201,17 +222,47 @@ fn stay(message: &str) {
 }
 
 /// The dev build's start: the island's element emptied (its markup is the
-/// upstream's, perhaps from another agentkit), then a fresh mount that
-/// loads the feed itself
+/// upstream's, perhaps from another agentkit), then a fresh mount of the
+/// page the address names, which loads itself
 #[cfg(not(feature = "hydrate"))]
 pub fn fresh() {
     if let Some(root) = root() {
         root.set_inner_html("");
     }
     // The data block, if any, is the upstream's: left alone, unread
-    crate::launch(FeedPage {
-        feed: FeedLoad::Pending,
-    });
+    let path = web_sys::window()
+        .map(|w| w.location())
+        .and_then(|l| Some(l.pathname().ok()? + &l.search().ok()?))
+        .unwrap_or_default();
+    crate::launch(fresh_page(&path));
+}
+
+/// The page a fresh mount draws at `path_and_query`, not loaded: a post's
+/// page (`/agora/post/<id>`) is that thread, a feed's (`/agora/feed`,
+/// `/agora/community/<name>`, with their sort and offset) that page of it,
+/// and anything else (`/agora/app`, dx's page) the global feed's first
+/// page. A fresh mount has no community header: the feed's [`Reload`]
+/// loads posts only, so a community's page reads "All Posts" in the dev
+/// build (the release build hydrates the server's header)
+///
+/// [`Reload`]: agora_agentkit::ui::Reload
+#[cfg_attr(feature = "hydrate", allow(dead_code))]
+pub fn fresh_page(path_and_query: &str) -> Page {
+    match AgoraLink::from_site_path(path_and_query) {
+        Some(Ok(AgoraLink::Feed(input))) => FeedPage::new(input, FeedLoad::Pending).into(),
+        Some(Ok(AgoraLink::Content {
+            kind: ContentKind::Post,
+            read,
+        })) => match read.id {
+            // The server sends a short id's page to its full id's, so a
+            // post's page has its full id
+            ContentRef::Content(id) => {
+                ThreadPage::new(PostId::from(*id.as_uuid()), ThreadLoad::Pending).into()
+            }
+            _ => FeedPage::new(FeedPage::input(), FeedLoad::Pending).into(),
+        },
+        _ => FeedPage::new(FeedPage::input(), FeedLoad::Pending).into(),
+    }
 }
 
 /// dioxus-web's hydration without dioxus-fullstack, which sets two globals
@@ -258,50 +309,30 @@ mod globals {
 #[cfg(test)]
 mod tests {
     use agora_agentkit::{
-        responses::PostResponse,
-        ui::{
-            feed::{FeedLoad, PostCardView},
-            island::AGENTKIT_VERSION,
-            ssr,
-        },
+        requests::GetFeedInput,
+        ui::{island::AGENTKIT_VERSION, page::PageIsland, ssr},
     };
 
     use super::*;
+    use crate::test_pages;
 
-    /// A post as the feed sends one
-    fn post(title: &str) -> PostResponse {
-        serde_json::from_str(&format!(
-            r#"{{
-                "id": "8dbc9b3a-db55-47d5-8b14-5b913a1b44ac",
-                "agent_id": "34fb8f2e-0710-43c0-b592-a396969f1667",
-                "agent_name": "litmus",
-                "community_id": "8e998901-39c8-4220-a863-b3b47b0ac3e6",
-                "community_name": "meta-governance",
-                "title": {},
-                "body": "A body",
-                "created_at": "2026-11-14T09:00:00Z",
-                "comment_count": 3,
-                "signed": true
-            }}"#,
-            serde_json::to_string(title).unwrap()
-        ))
-        .unwrap()
-    }
-
-    fn page(title: &str) -> FeedPage {
-        FeedPage {
-            feed: FeedLoad::Loaded(vec![PostCardView::from(post(title))]),
-        }
+    /// A feed page with a post titled `title`
+    fn page(title: &str) -> Page {
+        FeedPage::new(
+            GetFeedInput::default(),
+            FeedLoad::Loaded(vec![test_pages::post(1, title)]),
+        )
+        .into()
     }
 
     /// The block's text, as the server writes it (agentkit's
     /// `script_element`), without its tags
-    fn block_text(page: &FeedPage) -> String {
+    fn block_text(page: &Page) -> String {
         island::to_script_text(page).unwrap()
     }
 
     /// A block as another agentkit would have written it
-    fn other_version(page: &FeedPage) -> String {
+    fn other_version(page: &Page) -> String {
         let text = block_text(page);
         let stamp = format!(r#""agentkit":"{AGENTKIT_VERSION}""#);
         assert!(text.contains(&stamp), "{text}");
@@ -325,26 +356,60 @@ mod tests {
         ] {
             assert_eq!(
                 plan(Some(&block_text(&page)), &guard),
-                Plan::Hydrate(page.clone())
+                Plan::Hydrate(Box::new(page.clone()))
             );
         }
     }
 
     /// What the client launches from the server's block draws the server's
-    /// markup: the block read by [`plan`], then the `VirtualDom` `launch`
-    /// mounts (`crate::island_dom`)
+    /// markup, for every page: the block read by [`plan`], then the
+    /// `VirtualDom` `launch` mounts (`crate::island_dom`)
     #[test]
     fn the_hydrated_island_draws_the_servers_markup() {
-        let page = page("A title");
-        let server =
-            ssr::render_island(DATA_ID, agora_agentkit::ui::feed::FeedIsland, page.clone())
-                .unwrap();
-        let Plan::Hydrate(read) = plan(Some(&block_text(&page)), &Guard::Unavailable) else {
-            panic!("not hydrated");
+        for page in test_pages::all() {
+            let server = ssr::render_island(DATA_ID, PageIsland, page.clone()).unwrap();
+            let Plan::Hydrate(read) =
+                plan(Some(&server_block(&server.script)), &Guard::Unavailable)
+            else {
+                panic!("not hydrated: {page:?}");
+            };
+            let mut dom = crate::island_dom(*read);
+            dom.rebuild_in_place();
+            assert_eq!(dioxus_ssr::pre_render(&dom), server.html, "{page:?}");
+        }
+    }
+
+    /// The data block element's text, as the browser's `textContent` reads it
+    fn server_block(element: &str) -> String {
+        let start = element.find('>').unwrap() + 1;
+        element[start..element.rfind("</script>").unwrap()].to_owned()
+    }
+
+    /// A fresh mount draws the page its address names, not loaded
+    #[test]
+    fn a_fresh_mount_draws_the_page_its_address_names() {
+        let post = agora_agentkit::fixtures::post().id;
+        assert_eq!(
+            fresh_page(&format!("/agora/post/{post}")),
+            Page::Thread(ThreadPage::new(post, ThreadLoad::Pending))
+        );
+        let Page::Feed(feed) = fresh_page("/agora/community/meta-governance?sort=active&offset=25")
+        else {
+            panic!("not a feed");
         };
-        let mut dom = crate::island_dom(read);
-        dom.rebuild_in_place();
-        assert_eq!(dioxus_ssr::pre_render(&dom), server.html);
+        assert_eq!(feed.feed, FeedLoad::Pending);
+        // The page's own path, in its canonical order
+        assert_eq!(
+            feed.href(),
+            "/agora/community/meta-governance?offset=25&sort=active"
+        );
+        for path in ["/agora/app", "/agora/app/", "/agora/feed", "/", ""] {
+            assert_eq!(
+                fresh_page(path),
+                Page::Feed(FeedPage::new(FeedPage::input(), FeedLoad::Pending)),
+                "{path}"
+            );
+        }
     }
 
     /// No block, or one that isn't this island's JSON: stay, no reload

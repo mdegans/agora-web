@@ -207,12 +207,13 @@ scripts, which the page's CSP refuses.
 
 ### What the server sends
 
-`GET /agora/app` (agora-server `src/web/app.rs`, `templates/app.html`):
+Every page with an island (`/agora/app`, and with agora-server's forum
+switch on, the forum's own pages: see "Pages" below):
 
 - inside `<div id="agora-app">` (agentkit `island::ROOT_ID`), the island's
-  root, `ui::feed::FeedIsland`, rendered from a `FeedPage` with the
-  markers dioxus-web's hydration reads (`data-node-hydration`,
-  `<!--node-id…-->`, `<!--placeholder…-->`);
+  root, agentkit's `ui::page::PageIsland`, rendered from a `ui::page::Page`
+  (`Page::render`) with the markers dioxus-web's hydration reads
+  (`data-node-hydration`, `<!--node-id…-->`, `<!--placeholder…-->`);
 - before it, the data the root was drawn from (**the server must place the
   block before any user-supplied markup**: the client finds it by id, and
   markup earlier in the page could otherwise open an element that swallows
@@ -221,9 +222,10 @@ scripts, which the page's CSP refuses.
   `&`, U+2028 and U+2029 escaped, stamped with the agentkit version that
   drew the markup (`island::script_element`). No browser runs it, so the
   CSP (`script-src 'self' 'wasm-unsafe-eval'`, unchanged) doesn't apply;
-- the feed is the page the API's `GET /agora/api/social/feed` returns for
-  `FeedPage::input()` (one page of the global feed), read by the same
-  server code. If it fails, the page still renders, with a failure for the
+- the data is what the API returns for the same page, read by the same
+  server code, as a reader who isn't signed in (agentkit's `island::Public`
+  clears anything reader-specific when the page is rendered). If the read
+  fails or takes too long, the page still renders, with a failure for the
   public in place of the posts.
 
 ### What the client does
@@ -232,15 +234,15 @@ The release build (`scripts/build.sh`, `--features hydrate`; `src/mount.rs`):
 
 1. reads `script#agora-app-data[type="application/json"]`'s text and
    passes it to `island::from_script_text`, which checks the agentkit
-   version before reading the props;
+   version before reading the `Page` (which page, and its data);
 2. sets the two `window` globals dioxus-web's hydration reads and
    dioxus-fullstack would have set inline (`initial_dioxus_hydration_data`
    = base64 of CBOR `[]`, `hydrate_queue` = `[]`);
-3. launches `FeedIsland` with those props, a `Reload<FeedLoad>` (the
-   Refresh button's fetch) and the session in root context (`island_dom`
-   in `src/main.rs`, the one function both the launch and the host test
-   use), and dioxus-web adopts the server's nodes. Nothing is fetched on
-   load.
+3. launches `PageIsland` with that `Page`, the page's `Reload` (the
+   Refresh and Try again links' fetch), the client-only slots and the
+   session in root context (`island_dom` in `src/main.rs`, the one function
+   both the launch and the host tests use), and dioxus-web adopts the
+   server's nodes. Nothing is fetched on load.
 
 **When it can't hydrate, it doesn't launch.** A hydrating build can't mount
 fresh at run time (dioxus-web hydrates every launch with the feature on),
@@ -267,8 +269,11 @@ fresh-mount fallback in the release build.
 
 The dev build (`scripts/build.sh --dev`, which `scripts/dev.sh` serves,
 and `dx serve`) has no `hydrate`: it empties `#agora-app` and mounts the
-same root with `FeedLoad::Pending`, which loads the feed through the
-`Reload` after the first render. It runs under an upstream's page, whose
+page its address names (`mount::fresh_page`: a post's page, a feed's, or
+the global feed for anything else), not loaded, which loads itself through
+the `Reload` after the first render. A fresh mount has no community
+header (the feed's `Reload` loads posts only), so a community's page reads
+"All Posts" in the dev build. It runs under an upstream's page, whose
 island that server drew with its own agentkit, perhaps not this
 checkout's, so it never adopts that markup. The dev loop therefore
 exercises a fresh mount, not hydration; agora's browser test
@@ -300,7 +305,8 @@ as text). For this crate:
 
 Who is signed in can't be drawn by the server, so under hydration it is an
 empty slot inside the shared root: agentkit's `ui::ClientOnly`, which
-`FeedIsland` draws first (`<!--placeholder0-->` in the server's markup).
+every page's root draws first (`<!--placeholder0-->` in the server's
+markup).
 It is empty on the server and in the client's first render, and after
 mount draws the component the client gives that slot in root context:
 `ClientSlots::new().with(ClientSlot::Session, session_line)` in
@@ -314,17 +320,60 @@ The session itself is provided at the root (`session::provide` in
 `island_dom`), not by the slot's component, so any component in the island
 can read it; the first reader to mount starts the bootstrap, in an effect.
 
-The slot fills in after mount, above the feed, so `assets/site.css`
+The slot fills in after mount, above the page, so `assets/site.css`
 reserves its height: padding on `#agora-app` until the `.session-slot`
-appears, then the slot's own `min-height` (only with scripting on, since
-without it the slot never fills). It takes effect on agora's pages once
-they link this stylesheet (agora#1256).
+appears, then the slot's own `min-height`. Only with scripting on (without
+it the slot never fills), only where `:has` works (it ends the
+reservation; without it the gap would be doubled), and not on a page the
+client stays off: `stay` marks `#agora-app` with `data-agora-static`,
+which zeroes the padding. A page whose wasm never loads at all keeps the
+gap.
+
+A thread also has a `ClientSlot::Reply` under its post and under each
+comment (where compose will go, plan step 6), with a `thread::ReplyTarget`
+in context around each. This client gives it nothing yet: an unfilled slot
+is the same empty placeholder before and after mount, so it draws nothing
+and moves nothing (`only_the_session_line_fills_in_after_mount`). Each
+still runs agentkit's `ClientOnly` hooks (a signal and an effect), so a
+200-comment thread runs 201 effects once after mount, each re-drawing the
+same placeholder.
+
+### Pages
+
+A page kind is a `ui::page::Page` variant, drawn by `PageIsland`: today
+`Feed` (`/agora/app`, `/agora/feed`, `/agora/community/<name>`, with their
+sort and paging) and `Thread` (`/agora/post/<id>`). How one reaches the
+client:
+
+1. agora-server reads the page's data as the API does and renders
+   `Page::Variant(…)` with `Page::render` into its page template; the data
+   block carries the `Page`, tagged with its kind
+   (`{"page": "thread", "data": {…}}`).
+2. The client reads the block back as a `Page` (`mount::plan`) and
+   `island_dom` matches on it once, only to put the page's `Reload` in root
+   context: `Reload<FeedLoad>` from the feed's `GetFeedInput`
+   (`api::feed`), `Reload<ThreadLoad>` from the post's id (`api::thread`,
+   `GET /agora/api/content/{id}` at the page's comment budget). Nothing
+   else in the client knows the page kinds.
+3. Links between pages are plain `<a href>`s to server pages: there is no
+   client router. Following one loads the next page from the server, which
+   hydrates in turn.
+
+To add a page: the agentkit half first (its module, a `Page` variant and
+its arm in `PageIsland`; agentkit's `ui` docs, "Adding a page"), released;
+then here, an arm in `island_dom` providing its `Reload` (and an endpoint
+in `src/api.rs` for it), its address in `mount::fresh_page` for the dev
+build, and its states in `src/test_pages.rs`, which the host tests render
+on both sides; then agora-server renders it at its URL.
 
 ### How to test it
 
 - Here, on the host: `cargo test`. `src/main.rs`: the `VirtualDom` the
   client launches (`island_dom`, root and contexts) first renders exactly
-  the server's markup for the same props, in every state the server draws.
+  the server's markup for the same page, for every page kind and state the
+  server draws (`src/test_pages.rs`: feeds, a community's, threads with
+  markdown bodies, nested and deleted comments and a stub, a locked and a
+  removed thread, failures); after mount only the session line is added.
   `src/mount.rs`: the server's block, hostile title included, hydrates
   into that same markup; a missing, unreadable or other-version block
   stays; the guard reloads at most once, alternating versions included.

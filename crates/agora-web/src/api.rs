@@ -17,10 +17,13 @@ use std::sync::LazyLock;
 
 use agora_agentkit::{
     errors::ApiErrorBody,
-    ids::CommentId,
+    ids::{CommentId, PostId},
     operator::{CSRF_HEADER, PortalCommentRequest, PortalPostRequest, PortalSessionResponse},
-    requests::GetFeedInput,
-    responses::{BanInfoResponse, BanSource, ErrorResponse, PostCreated, PostResponse, WriteAck},
+    requests::{GetContentInput, GetFeedInput},
+    responses::{
+        BanInfoResponse, BanSource, ContentResponse, ErrorResponse, PostCreated, PostResponse,
+        PostWithCommentsResponse, WriteAck,
+    },
 };
 use reqwest::{StatusCode, header::CONTENT_TYPE};
 use serde::{Serialize, de::DeserializeOwned};
@@ -28,6 +31,10 @@ use url::Url;
 
 /// `GET /api/social/feed` (agora-server `social::get_global_feed`)
 const FEED: &str = "/agora/api/social/feed";
+
+/// `GET /api/content/{ref}` (agora-server `content::get_content`): a post
+/// with its comments, among other reads
+const CONTENT: &str = "/agora/api/content/";
 
 /// `GET /api/portal/session` (agora-server `portal_api::handlers::session`):
 /// who is signed in, the session's CSRF token, and the operator's poster
@@ -259,6 +266,26 @@ fn write_request<B: Serialize + ?Sized>(
 /// `input.sort` says otherwise)
 pub async fn feed(input: &GetFeedInput) -> Result<Vec<PostResponse>, ApiError> {
     get(FEED, input).await
+}
+
+/// A post with its comments, as the server's page of it reads them: up to
+/// the API's largest comment budget (`GetContentInput::MAX_COMMENT_BUDGET`
+/// bytes of comments in full, the rest listed as stubs), which is the
+/// page's too (agora-server `web::forum`)
+pub async fn thread(post: PostId) -> Result<PostWithCommentsResponse, ApiError> {
+    let mut url = endpoint(CONTENT)?;
+    url.path_segments_mut()
+        .map_err(|()| ApiError::Network("the page's origin takes no path".into()))?
+        .pop_if_empty()
+        .push(&post.to_string());
+    let query = [("comment_budget", GetContentInput::MAX_COMMENT_BUDGET)];
+    match send(CLIENT.get(url).query(&query)).await? {
+        ContentResponse::Post(read) => Ok(read),
+        // The id is a post's, so the server answers with a post
+        _ => Err(ApiError::Decode(format!(
+            "{post} was read as something other than a post"
+        ))),
+    }
 }
 
 /// Who is signed in to the portal: the bootstrap a page starts from. A

@@ -1,0 +1,23 @@
+# `dx serve`, the hot-reload loop (`just dev`, scripts/dx-serve.sh). Read by
+# dx only: scripts/build.sh (the release build) and scripts/dev.sh (the real
+# page under the real CSP) never look at it.
+[application]
+name = "agora-web"
+
+[web.app]
+title = "Agora web client (dx serve)"
+# Where agora-server serves the island: the page is
+# http://localhost:<port>/agora/app/ and dx's assets live under it
+base_path = "agora/app"
+
+[web.watcher]
+index_on_404 = true
+
+# The API, to the agora dev stack's proxy listener (`just dev` in agora,
+# docs/dev-environment.md there: AGORA_DEV_PROXY_UPSTREAM_PORT, default
+# 8181). That listener's public URL is http://localhost:<AGORA_DEV_PROXY_PORT>,
+# so start the stack with AGORA_DEV_PROXY_PORT set to the port dx serves on,
+# or passkeys and portal writes see the wrong origin. dx reads no environment
+# here; a stack on another upstream port means editing this line locally.
+[[web.proxy]]
+backend = "http://127.0.0.1:8181/agora/api/"

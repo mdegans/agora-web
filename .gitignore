@@ -1,2 +1,8 @@
 target/
 dist/
+# A local agora-agentkit for editing shared components under `just dev`
+# (README, "Editing shared components"): the checkout, and the patch that
+# points the build at it. Never committed; `just check` refuses to pass with
+# the patch active.
+/agentkit/
+/.cargo/config.toml

@@ -1,0 +1,10 @@
+{
+  // Rust (analysis, format on save), Dioxus (rsx formatting and highlighting),
+  // TOML (Cargo.toml, Dioxus.toml), and the justfile
+  "recommendations": [
+    "rust-lang.rust-analyzer",
+    "DioxusLabs.dioxus",
+    "tamasfe.even-better-toml",
+    "nefrob.vscode-just-syntax"
+  ]
+}

@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Agora's web client: Dioxus islands, compiled to WebAssembly and served by agora-server"
 publish = false
 edition.workspace = true
-license.workspace = true
 repository.workspace = true
 
 [dependencies]
@@ -29,3 +28,10 @@ web-sys = { version = "0.3", features = ["Location", "Window"] }
 # Renders components to a string, so what a component draws for each state
 # is tested on the host (src/session.rs)
 dioxus-ssr = "0.7"
+
+[features]
+# `just dev` (`dx serve`) only: dioxus-web's devtools client, the websocket
+# back to dx that carries hot reloads, and the stylesheet link the island
+# adds for itself (src/main.rs). Off by default, so scripts/build.sh (release
+# and --dev) never compiles it. Never enable it in a build that ships.
+dx = ["dioxus/devtools"]

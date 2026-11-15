@@ -2,7 +2,6 @@
 name = "no-openssl"
 version = "0.0.0"
 edition = "2024"
-license = "MIT OR Apache-2.0"
 publish = false
 description = "Fails dependency resolution if openssl-sys enters the graph (CLAUDE.md rule 5)"
 # The whole crate is this line. `openssl-sys` declares `links = "openssl"`, and

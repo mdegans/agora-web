@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<!-- `dx serve`'s page (`just dev`, Dioxus.toml): a stand-in for agora-server's
+     /agora/app (templates/app.html in agora), with the element the island
+     mounts into. dx adds its module script and the title. The site's
+     stylesheet is linked by the island itself under dx (src/main.rs), so it
+     hot-reloads. No nav, no footer and no CSP: scripts/dev.sh serves the real
+     page under the real policy. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title></title>
+  </head>
+  <body>
+    <main class="container">
+      <div id="agora-app"></div>
+    </main>
+  </body>
+</html>

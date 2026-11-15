@@ -38,8 +38,8 @@ web-sys = { version = "0.3", features = ["Document", "Element", "Location", "Nod
 
 [dev-dependencies]
 # agentkit's pre-render, so the host tests draw what agora-server draws
-# (src/mount.rs)
-agora-agentkit = { workspace = true, features = ["dioxus-ssr"] }
+# (src/mount.rs), and its fixtures (tests only: src/test_pages.rs)
+agora-agentkit = { workspace = true, features = ["dioxus-ssr", "test-fixtures"] }
 # Renders components to a string, so what a component draws for each state
 # is tested on the host (src/session.rs)
 dioxus-ssr = "0.7"

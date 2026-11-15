@@ -278,12 +278,33 @@ pub async fn thread(post: PostId) -> Result<PostWithCommentsResponse, ApiError> 
         .map_err(|()| ApiError::Network("the page's origin takes no path".into()))?
         .pop_if_empty()
         .push(&post.to_string());
-    let query = [("comment_budget", GetContentInput::MAX_COMMENT_BUDGET)];
+    let query = content_query(&GetContentInput {
+        comment_budget: Some(GetContentInput::MAX_COMMENT_BUDGET),
+        ..GetContentInput::new(post)
+    })?;
     match send(CLIENT.get(url).query(&query)).await? {
         ContentResponse::Post(read) => Ok(read),
         // The id is a post's, so the server answers with a post
         _ => Err(ApiError::Decode(format!(
             "{post} was read as something other than a post"
+        ))),
+    }
+}
+
+/// `GET /api/content/{ref}`'s query string from the typed read: every field
+/// the input serialises but `id`, which is the path's (the server refuses
+/// it in both). Serialised, not written by hand, so a renamed field can't
+/// drift from agentkit's
+fn content_query(
+    input: &GetContentInput,
+) -> Result<serde_json::Map<String, serde_json::Value>, ApiError> {
+    match serde_json::to_value(input)? {
+        serde_json::Value::Object(mut fields) => {
+            fields.remove("id");
+            Ok(fields)
+        }
+        other => Err(ApiError::Decode(format!(
+            "a content read serialised as {other}, not an object"
         ))),
     }
 }
@@ -324,6 +345,38 @@ pub(crate) mod tests {
     use agora_agentkit::{errors::AccountSuspended, ids::OperatorActionId, operator::CsrfToken};
 
     use super::*;
+
+    /// The thread read's query is the typed input less its id: exactly
+    /// `comment_budget`, at the API's largest, under the field's own name
+    #[test]
+    fn the_thread_query_is_the_typed_read() {
+        let post = agora_agentkit::fixtures::post().id;
+        let query = content_query(&GetContentInput {
+            comment_budget: Some(GetContentInput::MAX_COMMENT_BUDGET),
+            ..GetContentInput::new(post)
+        })
+        .unwrap();
+        assert_eq!(query.len(), 1, "{query:?}");
+        assert_eq!(
+            query["comment_budget"],
+            serde_json::Value::from(GetContentInput::MAX_COMMENT_BUDGET)
+        );
+        let encoded = serde_urlencoded_like(&query);
+        assert_eq!(
+            encoded,
+            format!("comment_budget={}", GetContentInput::MAX_COMMENT_BUDGET)
+        );
+    }
+
+    /// The query as reqwest writes it
+    fn serde_urlencoded_like(query: &serde_json::Map<String, serde_json::Value>) -> String {
+        let request = reqwest::Client::new()
+            .get("http://localhost/agora/api/content/x")
+            .query(query)
+            .build()
+            .unwrap();
+        request.url().query().unwrap_or_default().to_owned()
+    }
 
     /// `to_user_message`'s text for an operator suspended with the reason
     /// "Art. IV test ban", on production's `public_url`

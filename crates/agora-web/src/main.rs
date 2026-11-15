@@ -24,12 +24,13 @@
 use agora_agentkit::{
     ids::PostId,
     requests::GetFeedInput,
+    responses::{PostResponse, PostWithCommentsResponse},
     ui::{
         ClientSlot, ClientSlots, Reload,
-        feed::FeedLoad,
+        feed::{FeedLoad, FeedPage},
         island::{AGENTKIT_VERSION, ROOT_ID},
         page::{Page, PageIsland},
-        thread::ThreadLoad,
+        thread::{self, ThreadLoad},
     },
 };
 use dioxus::prelude::*;
@@ -80,7 +81,7 @@ fn reload_feed(input: GetFeedInput) -> Reload<FeedLoad> {
         let input = input.clone();
         Box::pin(async move {
             match api::feed(&input).await {
-                Ok(posts) => posts.into_iter().collect(),
+                Ok(posts) => feed_loaded(input, posts),
                 Err(e) => FeedLoad::Failed(e.to_string()),
             }
         })
@@ -94,11 +95,26 @@ fn reload_thread(post: PostId) -> Reload<ThreadLoad> {
     Reload::new(move || {
         Box::pin(async move {
             match api::thread(post).await {
-                Ok(read) => ThreadLoad::Loaded(Box::new(read)),
+                Ok(read) => thread_loaded(read),
                 Err(e) => ThreadLoad::Failed(e.to_string()),
             }
         })
     })
+}
+
+/// A reloaded feed page as the page shows it: the anonymous reader's view,
+/// as the server's render is. A same-origin read carries the session's
+/// cookie, and `FeedPage::new` clears what is the reader's own
+/// (`you_commented`; agentkit's per-post `public` is crate-private)
+fn feed_loaded(input: GetFeedInput, posts: Vec<PostResponse>) -> FeedLoad {
+    FeedPage::new(input, posts.into_iter().collect()).feed
+}
+
+/// A reloaded thread as the page shows it: the anonymous reader's view
+/// (`thread::public_read`: `you_commented`, `in_your_trash` and its text, a
+/// reader's poll), as for [`feed_loaded`]
+fn thread_loaded(read: PostWithCommentsResponse) -> ThreadLoad {
+    ThreadLoad::Loaded(Box::new(thread::public_read(read)))
 }
 
 /// The island's `VirtualDom`, exactly as [`launch`] mounts it: agentkit's
@@ -244,6 +260,31 @@ mod tests {
             let after = mounted(&mut dom);
             assert_eq!(after, format!("{line}{first}"), "{page:?}");
         }
+    }
+
+    /// A reload shows the anonymous reader's view, as the server's page
+    /// does: a signed-in reader's own fields are cleared, its trashed text
+    /// is the placeholder, and its view of a poll is dropped
+    #[test]
+    fn a_reload_is_the_anonymous_view() {
+        use agora_agentkit::fixtures;
+        let mine = PostResponse {
+            you_commented: true,
+            ..fixtures::post()
+        };
+        let FeedLoad::Loaded(posts) = feed_loaded(GetFeedInput::default(), vec![mine]) else {
+            panic!("not loaded")
+        };
+        assert!(!posts[0].you_commented);
+
+        let mut read = test_pages::thread_read();
+        read.post.you_commented = true;
+        read.poll = Some(fixtures::poll());
+        let ThreadLoad::Loaded(shown) = thread_loaded(read) else {
+            panic!("not loaded")
+        };
+        assert!(!shown.post.you_commented);
+        assert!(shown.poll.is_none());
     }
 
     /// A thread page's reload is the thread's, a feed page's the feed's,

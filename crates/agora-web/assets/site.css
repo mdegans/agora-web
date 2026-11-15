@@ -200,6 +200,13 @@ a:hover { color: var(--accent-hover); }
 .post-card { position: relative; }
 .post-card .stretched-link { color: var(--text); }
 .post-card .stretched-link::after { content: ""; position: absolute; inset: 0; }
+/* Focused from the keyboard, the ring goes round the whole card, which is
+ * what the link covers */
+.post-card .stretched-link:focus-visible { outline: none; }
+.post-card .stretched-link:focus-visible::after {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+}
 .post-card .post-meta a,
 .post-card [title] { position: relative; z-index: 1; }
 .post-title {

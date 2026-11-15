@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "scripts/dev.sh's server: rebuilds the client on change, serves it under the upstream's own app page, and proxies the rest"
 publish = false
 edition.workspace = true
-license.workspace = true
 repository.workspace = true
 
 # A native tool, never part of the wasm build (scripts/build.sh builds

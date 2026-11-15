@@ -316,8 +316,12 @@ can read it; the first reader to mount starts the bootstrap, in an effect.
 
 The slot fills in after mount, above the feed, so `assets/site.css`
 reserves its height: padding on `#agora-app` until the `.session-slot`
-appears, then the slot's own `min-height` (only with scripting on, since
-without it the slot never fills). It takes effect on agora's pages once
+appears, then the slot's own `min-height`. Only with scripting on (without
+it the slot never fills), only where `:has` works (it ends the
+reservation; without it the gap would be doubled), and not on a page the
+client stays off: `stay` marks `#agora-app` with `data-agora-static`,
+which zeroes the padding. A page whose wasm never loads at all keeps the
+gap. It takes effect on agora's pages once
 they link this stylesheet (agora#1256).
 
 ### How to test it

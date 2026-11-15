@@ -180,14 +180,22 @@ fn data_block() -> Option<String> {
         .text_content()
 }
 
-/// Not starting: say why, once, and disable the island's buttons, which
-/// would do nothing without the client (a link still works). The page isn't
+/// Not starting: say why, once, mark the island static (`data-agora-static`,
+/// so the stylesheet reserves no space for a session line that won't come),
+/// and disable its buttons, which would do nothing without the client (a
+/// link still works). The page isn't
 /// hydrated, so changing its markup can't misplace anything
 #[cfg(feature = "hydrate")]
 fn stay(message: &str) {
     use web_sys::wasm_bindgen::JsCast;
     web_sys::console::warn_1(&message.into());
-    let Some(buttons) = root().and_then(|root| root.query_selector_all("button").ok()) else {
+    let Some(root) = root() else {
+        return;
+    };
+    // The session slot will never fill: assets/site.css stops reserving
+    // its space on a page marked so
+    let _ = root.set_attribute("data-agora-static", "");
+    let Ok(buttons) = root.query_selector_all("button") else {
         return;
     };
     for i in 0..buttons.length() {

@@ -659,11 +659,19 @@ details > summary {
  * in and which client this is (agora-web src/main.rs, `session_line`). Its
  * space is reserved as padding until it appears and is then its own
  * min-height, so the feed below doesn't move when it fills in. Only with
- * scripting on: without it the slot never fills, and nothing is reserved. */
+ * scripting on (without it the slot never fills), and not on a page the
+ * client doesn't start on. */
 @media (scripting: enabled) {
-    #agora-app { padding-top: 3.5rem; }
-    #agora-app:has(> .session-slot) { padding-top: 0; }
+    /* Only where `:has` works, which ends the reservation: without it the
+     * padding would stay and the slot add its own height, a double gap */
+    @supports selector(:has(*)) {
+        #agora-app { padding-top: 3.5rem; }
+        #agora-app:has(> .session-slot) { padding-top: 0; }
+    }
 }
+/* A page the client stays off (src/mount.rs, `stay`): the slot never
+ * fills, so nothing is reserved */
+#agora-app[data-agora-static] { padding-top: 0; }
 .session-slot {
     display: flex;
     flex-direction: column;

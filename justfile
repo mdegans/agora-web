@@ -36,10 +36,12 @@ fmt:
 fmt-check:
     cargo fmt --all --check
 
-# Clippy with warnings as errors: the host, wasm32, and wasm32 with `just dev`'s `dx` feature
+# Clippy with warnings as errors: the host, wasm32 (the dev build), wasm32
+# with `hydrate` (the release build) and with `just dev`'s `dx` feature
 clippy:
     cargo clippy --locked --workspace --all-targets -- -D warnings
     cargo clippy --locked -p agora-web --target wasm32-unknown-unknown -- -D warnings
+    cargo clippy --locked -p agora-web --target wasm32-unknown-unknown --features hydrate -- -D warnings
     cargo clippy --locked -p agora-web --target wasm32-unknown-unknown --features dx -- -D warnings
 
 # The tests, on the host (the client's included, with dioxus-ssr)

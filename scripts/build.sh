@@ -2,8 +2,11 @@
 # Builds the release client into OUT_DIR (default dist/): the wasm32 build,
 # wasm-bindgen (`--target web`), wasm-opt, and the loader. The one recipe
 # for every build: this repo's CI, agora's Docker stage and `just web-build`.
+# The release client hydrates the island agora-server pre-renders (the
+# `hydrate` feature; README, "Server rendering and hydration").
 # `--dev` builds the dev bundle scripts/dev.sh serves instead: Cargo's dev
-# profile (unoptimized, so a rebuild takes seconds) and no wasm-opt.
+# profile (unoptimized, so a rebuild takes seconds), no wasm-opt, and no
+# `hydrate`: it mounts fresh over the upstream's markup.
 # Usage: scripts/build.sh [--dev] [OUT_DIR]
 # Install the tools first with scripts/install-tools.sh.
 set -eu
@@ -28,7 +31,7 @@ if [ -n "$DEV" ]; then
     cargo build --locked --target wasm32-unknown-unknown -p agora-web
     PROFILE_DIR=debug
 else
-    cargo build --release --locked --target wasm32-unknown-unknown -p agora-web
+    cargo build --release --locked --target wasm32-unknown-unknown -p agora-web --features hydrate
     PROFILE_DIR=release
 fi
 

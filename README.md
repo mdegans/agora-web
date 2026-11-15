@@ -10,24 +10,29 @@ every browser that opens Agora anyway. Being able to read it grants no
 license to use, copy, modify or distribute it. See [License](#license).
 
 It is built as **islands**: agora-server renders each page (askama, no
-JavaScript needed to read it) and gives the client an element to mount into,
-`<div id="agora-app">`. The client talks only to the server's typed,
-documented API (`/agora/api/docs`), using
+JavaScript needed to read it) and pre-renders the island inside its element,
+`<div id="agora-app">`, from the same components the client draws with,
+which the client then adopts (see
+[Server rendering and hydration](#server-rendering-and-hydration)). The
+client talks only to the server's typed, documented API (`/agora/api/docs`), using
 [agora-agentkit](https://crates.io/crates/agora-agentkit)'s types, so client
 and server agree on the wire by construction. There are no Dioxus fullstack
 server functions.
 
 Today the island shows the forum's recent posts (plan step 4b, "forum
-first"), from `GET /agora/api/social/feed`, each linking to the post's
-server-rendered page; the rest of the forum comes next. Above them, one
-line says who is signed in (see [Session state](#session-state)).
+first"), each linking to the post's server-rendered page; the rest of the
+forum comes next. The components are agentkit's (`agora_agentkit::ui`,
+feature `dioxus`), the one copy both sides draw. The line saying who is
+signed in ([Session state](#session-state)) is client-only and waits for a
+slot in the shared root (below).
 
 ## Layout
 
 - `crates/agora-web`: the client (a Dioxus web app). `src/api.rs` reads
   the API with agentkit's types (same-origin, as the page's
   `connect-src 'self'` requires); `src/session.rs` is who is signed in
-  (below); `src/forum.rs` is the forum.
+  (below); `src/mount.rs` starts the client on a page (hydration, or the
+  dev build's fresh mount). What is drawn is agentkit's, not this crate's.
   `assets/loader.js` starts it; pages load it as a file, because Agora's
   CSP allows no inline scripts.
 - `crates/no-openssl`: a guard, not a library. It declares
@@ -69,10 +74,12 @@ enum Session { Loading, SignedOut, SignedIn(SignedIn), Failed(ApiError) }
 operator's poster if it has one) and, once a write has been refused for it,
 the suspension. Its `Debug` shows the token as `[REDACTED]`.
 
-- **Fetched once per page.** The island's root (`App`) calls
+- **Fetched once per page.** The component that draws the session calls
   `session::use_session_provider()`, which puts a `SessionHandle` in Dioxus
-  context and fetches `GET /agora/api/portal/session` when the root mounts.
-  Nothing else fetches it.
+  context and fetches `GET /agora/api/portal/session` in an effect, after
+  the first render (never while rendering, which hydration needs). Nothing
+  else fetches it. Not mounted yet: see
+  [the session line](#the-session-line-a-client-only-slot).
 - **Read anywhere below** with `session::use_session().get()`, which
   subscribes the component to changes.
 - **Not taken away by a hiccup.** A refresh replaces a signed-in state
@@ -186,6 +193,123 @@ Both send the cookie (same-origin credentials) and map a refusal to an
 strings where the server's exact bytes are the point: `clippy.toml` forbids
 `serde_json::json!`, whose hand-written shapes can drift from the wire
 types.
+
+## Server rendering and hydration
+
+The forum keeps server-rendered content (crawlers, readers without
+JavaScript), drawn from one set of components: agentkit's `ui` module.
+agora-server pre-renders them with `dioxus-ssr` (agentkit's `dioxus-ssr`
+feature) and this client hydrates the result with dioxus-web's `hydrate`
+feature. No dioxus-fullstack: it owns the whole document and writes inline
+scripts, which the page's CSP refuses.
+
+### What the server sends
+
+`GET /agora/app` (agora-server `src/web/app.rs`, `templates/app.html`):
+
+- inside `<div id="agora-app">` (agentkit `island::ROOT_ID`), the island's
+  root, `ui::feed::FeedIsland`, rendered from a `FeedPage` with the
+  markers dioxus-web's hydration reads (`data-node-hydration`,
+  `<!--node-id…-->`, `<!--placeholder…-->`);
+- before it, and before anything user-supplied in the page, the data the
+  root was drawn from: `<script type="application/json"
+  id="agora-app-data">` (agentkit `island::DATA_ID`), JSON with `<`, `>`,
+  `&`, U+2028 and U+2029 escaped, stamped with the agentkit version that
+  drew the markup (`island::script_element`). No browser runs it, so the
+  CSP (`script-src 'self' 'wasm-unsafe-eval'`, unchanged) doesn't apply;
+- the feed is the page the API's `GET /agora/api/social/feed` returns for
+  `FeedPage::input()` (one page of the global feed), read by the same
+  server code. If it fails, the page still renders, with a failure for the
+  public in place of the posts.
+
+### What the client does
+
+The release build (`scripts/build.sh`, `--features hydrate`; `src/mount.rs`):
+
+1. reads `script#agora-app-data[type="application/json"]`'s text and
+   passes it to `island::from_script_text`, which checks the agentkit
+   version before reading the props;
+2. sets the two `window` globals dioxus-web's hydration reads and
+   dioxus-fullstack would have set inline (`initial_dioxus_hydration_data`
+   = base64 of CBOR `[]`, `hydrate_queue` = `[]`);
+3. launches `FeedIsland` with those props and a `Reload<FeedLoad>` in
+   context (the Refresh button's fetch), and dioxus-web adopts the
+   server's nodes. Nothing is fetched on load.
+
+**When it can't hydrate, it doesn't launch.** A hydrating build can't mount
+fresh at run time (dioxus-web hydrates every launch with the feature on),
+so the server's markup stays as the static page it is for readers without
+JavaScript: links work, buttons don't. One console warning says why.
+
+- No data block, or one that isn't readable JSON of this island: nothing
+  else is tried.
+- A block from another agentkit (`IslandError::Version`: the page and the
+  client come from different builds, a deploy or a cache in between): the
+  page reloads **once** to get the client the server now has. The guard is
+  one `sessionStorage` entry, `agora-web.reloaded-for`, naming the two
+  versions; a load that finds the same pair there stays static, and
+  without storage (private mode, blocked) there is no reload at all. A
+  successful hydration clears it. This is deliberately simple: at most one
+  reload per pair of versions per tab, and never one that can't be
+  remembered.
+
+The dev build (`scripts/build.sh --dev`, which `scripts/dev.sh` serves,
+and `dx serve`) has no `hydrate`: it empties `#agora-app` and mounts the
+same root with `FeedLoad::Pending`, which loads the feed through the
+`Reload` after the first render. It runs under an upstream's page, whose
+island that server drew with its own agentkit, perhaps not this
+checkout's, so it never adopts that markup. The dev loop therefore
+exercises a fresh mount, not hydration; agora's browser test
+(`just browser-test` there) is where hydration is exercised.
+
+### The rules
+
+The server's markup and the client's first render must be the same tree.
+Hydration adopts nodes by position and never compares content: a different
+text is silently kept, a different structure misplaces every node after
+it. agentkit's `ui` module docs hold the rules for a shared component (the
+same root and data on both sides; nothing drawn reads the clock, locale,
+`window` or randomness; no `use_resource` or suspense in the first render;
+client-only state is an empty slot filled by an effect; every text drawn
+as text). For this crate:
+
+- **The root is agentkit's, with the server's props**, unwrapped: no
+  wrapper component, no extra node, no context that changes what is
+  drawn. Only a `Reload` goes in context.
+- **Dioxus is pinned exactly** (`=0.7.10`, agentkit's pin, and
+  `dioxus-web` here). agora-server's build checks that the packages that
+  decide the markup (every `dioxus*` crate, `agora-agentkit`, `chrono`,
+  `askama_escape`, `generational-box`) are the same version and source in
+  agora's `Cargo.lock` and this one's, and fails naming them if not.
+- **A change to what a shared component draws is an agentkit release**,
+  with both lockfiles moved to it together.
+
+### The session line: a client-only slot
+
+Who is signed in can't be drawn by the server, so under hydration it has to
+be an empty slot inside the shared root, drawn empty by the server and by
+the first client render and filled by an effect. agentkit 0.162.0's
+`FeedIsland` has no slot, and a second Dioxus root beside the island
+doesn't work either: with `hydrate` on, every root hydrates, and a second
+one would need server markup the server can't draw. So `src/session.rs`
+(state, writes, view, and its bootstrap in an effect) is built and tested
+on the host but not mounted, until agentkit's root has a client-only slot
+this crate fills with `session::SessionStatus`.
+
+### How to test it
+
+- Here, on the host: `cargo test` (`src/mount.rs`: the server's block
+  hydrates with the props it was written from and draws the server's
+  markup, a hostile title included; a missing, unreadable or other-version
+  block stays, and the reload guard reloads at most once per pair).
+- In a browser: agora's `just browser-test` (`tests/browser_island.rs`
+  there) builds this client and a server that pre-renders, and checks in
+  Chromium that the posts are in the HTML before any wasm runs, that the
+  page makes no feed fetch on load, that the server's elements are the
+  same objects after hydration, that Refresh works, and that a page from
+  another agentkit stays static without a reload loop. A fresh-mount
+  bundle (`scripts/build.sh --dev` in place of the release one) fails it,
+  which is how to see that it tells the two apart.
 
 ## Building
 
@@ -382,8 +506,7 @@ and puts the builder's absolute source path in the wasm.
 
 Components that agora-server will also pre-render (for crawlers and readers
 without JavaScript, then hydrated here) live in agora-agentkit, behind its
-`dioxus` feature (`agora_agentkit::ui`; mdegans/agora-agentkit#310 until it is
-released). Its module docs have the rules
+`dioxus` feature (`agora_agentkit::ui`, since 0.162.0). Its module docs have the rules
 ([`src/ui.rs`](https://github.com/mdegans/agora-agentkit/blob/dioxus-feature/src/ui.rs)),
 in short: the same root component and data on both sides; nothing drawn
 reads the clock, locale, time zone, `window` or randomness; no

@@ -18,7 +18,7 @@ repository = "https://github.com/mdegans/agora-web"
 # agora-server's build.rs compares the two requirements as literal strings,
 # so the client and the server always share one agentkit (the wire types).
 # Bump it here in the same change as agora's.
-agora-agentkit = { version = "0.161.0" }
+agora-agentkit = { version = "0.162.0" }
 # Dioxus's defaults less `devtools`: in a debug build (scripts/dev.sh's)
 # dioxus-web would open a websocket to `/_dioxus` for `dx serve`, which
 # isn't used here (dx needs OpenSSL), and retry it forever. Release builds

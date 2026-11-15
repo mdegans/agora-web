@@ -22,6 +22,11 @@ case "$PORT" in
 esac
 require_dx
 require_wasm_bindgen
+# With `just agentkit-patch` on, a checkout whose version the workspace's
+# requirement no longer accepts (after a pull, say) is silently replaced by
+# crates.io's: say so before serving, not after an hour of edits that do
+# nothing
+"$ROOT/scripts/agentkit-patch.sh" check
 
 # No downloads: dx takes wasm-bindgen and esbuild from PATH, at the versions
 # just checked, instead of fetching its own with no checksum. Its data

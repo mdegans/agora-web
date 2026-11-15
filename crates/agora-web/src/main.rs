@@ -20,6 +20,13 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// The agentkit version compiled in (from `Cargo.lock`, see `build.rs`).
 const AGENTKIT_VERSION: &str = env!("AGORA_AGENTKIT_VERSION");
 
+// The `dx` feature is `just dev`'s alone: dioxus-web's devtools client and
+// the stylesheet link below. A build with it and without debug assertions
+// would be a release build carrying them (dx serve's `wasm-dev` profile
+// inherits `dev`, so it has them; `dx serve --release` would not).
+#[cfg(all(feature = "dx", not(debug_assertions)))]
+compile_error!("the `dx` feature is for `just dev` only; never build a release with it");
+
 /// The site's stylesheet, under `just dev` (`dx serve`) only.
 ///
 /// In every build that ships, the page links the stylesheet itself

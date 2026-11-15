@@ -11,7 +11,7 @@
   // Analysis is on the host, where everything builds (the client, its tests,
   // the dev server); only the few `cfg(target_arch = "wasm32")` lines show
   // as inactive. The check on save covers both targets: host clippy for the
-  // workspace, then wasm32 clippy for the client (scripts/ra-check.sh).
+  // workspace, then wasm32 clippy for the client with `dx` (scripts/ra-check.sh).
   "rust-analyzer.check.overrideCommand": ["scripts/ra-check.sh"],
   // Its own target directory (target/rust-analyzer), so analysis never waits
   // for `just dev`'s build, or makes it wait

@@ -41,19 +41,21 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       # just, the release binary, checked against the SHA-256 its release
-      # publishes (https://github.com/casey/just/releases/download/1.48.0/SHA256SUMS)
+      # publishes (https://github.com/casey/just/releases/download/1.48.0/SHA256SUMS).
+      # Downloaded and checked on every run, never taken from the cache: the
+      # published hash is the tarball's, so a cached binary can't be checked.
       - name: Install just
         env:
           JUST_VERSION: 1.48.0
           JUST_SHA256: a62e100de2922519ff3d6128f580837b4c0e197aa61a6fb448f43e50e7dd9b9b
         run: |
+          tarball="just-$JUST_VERSION-x86_64-unknown-linux-musl.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$tarball" "https://github.com/casey/just/releases/download/$JUST_VERSION/$tarball"
+          echo "$JUST_SHA256  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/just"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/just" just
+          echo "$RUNNER_TEMP/just" >> "$GITHUB_PATH"
           mkdir -p "$HOME/.local/bin"
-          if [ "$("$HOME/.local/bin/just" --version 2>/dev/null)" != "just $JUST_VERSION" ]; then
-            tarball="just-$JUST_VERSION-x86_64-unknown-linux-musl.tar.gz"
-            curl -fsSL -o "/tmp/$tarball" "https://github.com/casey/just/releases/download/$JUST_VERSION/$tarball"
-            echo "$JUST_SHA256  /tmp/$tarball" | sha256sum -c -
-            tar -xzf "/tmp/$tarball" -C "$HOME/.local/bin" just
-          fi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install wasm-bindgen and wasm-opt

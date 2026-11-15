@@ -2,7 +2,7 @@
 # `just dev`: the hot-reload loop, `dx serve` on the island. An edit inside an
 # `rsx!` (text, attributes, elements) patches the open page in place; any
 # other change rebuilds (a few seconds) and reloads it. The stylesheet
-# (crates/agora-web/assets/agora.css) hot-reloads too. API calls under
+# (crates/agora-web/assets/site.css) hot-reloads too. API calls under
 # /agora/api/ go to the agora dev stack (Dioxus.toml): start it in agora with
 # `AGORA_DEV_PROXY_PORT=<this port> just dev`.
 #

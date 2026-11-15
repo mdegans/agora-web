@@ -25,7 +25,10 @@ use agora_agentkit::{
         PostWithCommentsResponse, WriteAck,
     },
 };
-use reqwest::{StatusCode, header::CONTENT_TYPE};
+use reqwest::{
+    StatusCode,
+    header::{CONTENT_TYPE, HeaderValue},
+};
 use serde::{Serialize, de::DeserializeOwned};
 use url::Url;
 
@@ -255,10 +258,14 @@ fn write_request<B: Serialize + ?Sized>(
     url: Url,
     body: &B,
 ) -> Result<reqwest::RequestBuilder, ApiError> {
+    let mut csrf_value = HeaderValue::from_str(session.csrf_token.0.as_str())
+        .map_err(|e| ApiError::Decode(e.to_string()))?;
+    csrf_value.set_sensitive(true);
+
     Ok(CLIENT
         .post(url)
         .header(CONTENT_TYPE, "application/json")
-        .header(CSRF_HEADER, session.csrf_token.0.as_str())
+        .header(CSRF_HEADER, csrf_value)
         .body(serde_json::to_vec(body)?))
 }
 

@@ -1,14 +1,10 @@
 //! Who is signed in: the portal session, as the UI reads it.
 //!
-//! **Not drawn yet under hydration.** Who is signed in is client-only
-//! state: the server can't draw it, so under hydration it needs an empty
-//! slot inside the shared root, drawn empty by the server and by the first
-//! client render and filled after mount. agentkit 0.162.0's `FeedIsland`
-//! has no such slot, and a second Dioxus root beside it can't help: with
-//! dioxus-web's `hydrate` feature every launch hydrates, so a second root
-//! would need server markup too. Until agentkit has the slot (README,
-//! "Server rendering and hydration"), [`SessionStatus`] isn't mounted; the
-//! state, its writes and its view are tested on the host.
+//! **Drawn in a client-only slot.** Who is signed in is client-only
+//! state: the server can't draw it, so it is drawn in agentkit's
+//! `ClientOnly` slot, empty on the server and in the first client render
+//! and filled after mount ([`SessionStatus`], from `crate::session_line`;
+//! README, "Server rendering and hydration").
 //!
 //! **Provided at the root, fetched once per page.** [`provide`] puts one
 //! [`SessionHandle`] in the island's root context (`crate::island_dom`),
@@ -385,10 +381,6 @@ fn here() -> Option<String> {
 
 /// Who is signed in, from the context: [`SessionStatusView`] of
 /// [`use_session`], its "Try again" refreshing it
-#[allow(
-    dead_code,
-    reason = "mounted once agentkit's island has a client-only slot (module docs)"
-)]
 #[component]
 pub fn SessionStatus() -> Element {
     let handle = use_session();

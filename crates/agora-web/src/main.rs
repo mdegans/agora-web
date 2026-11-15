@@ -19,9 +19,9 @@
 //! agentkit's.
 
 use agora_agentkit::ui::{
-    Reload,
+    ClientSlot, ClientSlots, Reload,
     feed::{FeedIsland, FeedLoad, FeedPage},
-    island::ROOT_ID,
+    island::{AGENTKIT_VERSION, ROOT_ID},
 };
 use dioxus::prelude::*;
 
@@ -79,8 +79,8 @@ fn reload_feed() -> Reload<FeedLoad> {
 
 /// The island's `VirtualDom`, exactly as [`launch`] mounts it: agentkit's
 /// [`FeedIsland`], the root the server pre-rendered, with `page` as its
-/// props; [`reload_feed`] and the session ([`session::provide`]) in root
-/// context. One function, so the host test that compares its first render
+/// props; [`reload_feed`], the client-only slots ([`session_line`]) and
+/// the session ([`session::provide`]) in root context. One function, so the host test that compares its first render
 /// with the server's markup tests what ships (a wrapper or a context that
 /// changed the first render would fail it). Under dx, [`DxRoot`] around it
 /// (dx mounts fresh, never hydrates)
@@ -89,9 +89,31 @@ fn island_dom(page: FeedPage) -> VirtualDom {
     let dom = VirtualDom::new_with_props(FeedIsland, page);
     #[cfg(feature = "dx")]
     let dom = VirtualDom::new_with_props(DxRoot, DxRootProps { page });
-    let dom = dom.with_root_context(reload_feed());
+    let dom = dom
+        .with_root_context(reload_feed())
+        .with_root_context(ClientSlots::new().with(ClientSlot::Session, session_line));
     session::provide(&dom);
     dom
+}
+
+/// This client's version
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// What the island's session slot draws once mounted (agentkit's
+/// `ClientOnly`, first in `FeedIsland`; empty on the server and in the
+/// first render): who is signed in, and which client this is
+///
+/// In a `.session-slot`, whose height `assets/site.css` reserves before it
+/// appears, so the feed below doesn't move when it fills in
+fn session_line() -> Element {
+    rsx! {
+        div { class: "session-slot",
+            session::SessionStatus {}
+            p { class: "post-meta",
+                "Agora web client {VERSION}, built with agora-agentkit {AGENTKIT_VERSION}."
+            }
+        }
+    }
 }
 
 /// Launches the island ([`island_dom`]) into its element
@@ -158,5 +180,31 @@ mod tests {
             dom.rebuild_in_place();
             assert_eq!(dioxus_ssr::pre_render(&dom), server.html);
         }
+    }
+
+    /// After mount the session slot fills in (who is signed in, which
+    /// client), and the feed is still drawn as the server drew it
+    #[test]
+    fn the_session_line_fills_in_after_mount() {
+        let page = FeedPage {
+            feed: FeedLoad::Loaded(vec![card("A title")]),
+        };
+        let mut dom = island_dom(page);
+        dom.rebuild_in_place();
+        let first = dioxus_ssr::render(&dom);
+        assert!(!first.contains("signed in"), "{first}");
+        assert!(!first.contains("Agora web client"), "{first}");
+        for _ in 0..3 {
+            dom.render_immediate(&mut dioxus::dioxus_core::NoOpMutations);
+            dom.process_events();
+        }
+        let after = dioxus_ssr::render(&dom);
+        // On the host the bootstrap fails (no page origin): the failure line
+        assert!(
+            after.contains("Couldn&#39;t check who is signed in"),
+            "{after}"
+        );
+        assert!(after.contains("Agora web client"), "{after}");
+        assert!(after.contains("A title"), "{after}");
     }
 }

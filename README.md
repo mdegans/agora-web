@@ -22,9 +22,10 @@ server functions.
 Today the island shows the forum's recent posts (plan step 4b, "forum
 first"), each linking to the post's server-rendered page; the rest of the
 forum comes next. The components are agentkit's (`agora_agentkit::ui`,
-feature `dioxus`), the one copy both sides draw. The line saying who is
-signed in ([Session state](#session-state)) is client-only and waits for a
-slot in the shared root (below).
+feature `dioxus`), the one copy both sides draw. Above them, filled in
+after the page loads, one line says who is signed in
+([Session state](#session-state)) and one which client this is: client-only
+state, drawn in a slot the shared root leaves empty (below).
 
 ## Layout
 
@@ -79,8 +80,8 @@ the suspension. Its `Debug` shows the token as `[REDACTED]`.
   `src/main.rs`). The first component to read it starts
   `GET /agora/api/portal/session`, in an effect after the first render
   (never while rendering, which hydration needs); a page that reads it
-  nowhere fetches nothing. Not drawn yet: see
-  [the session line](#the-session-line-a-client-only-slot).
+  nowhere fetches nothing. Drawn in
+  [the session slot](#the-session-line-a-client-only-slot).
 - **Read anywhere in the island** with `session::use_session().get()`,
   which subscribes the component to changes.
 - **Not taken away by a hiccup.** A refresh replaces a signed-in state
@@ -297,18 +298,27 @@ as text). For this crate:
 
 ### The session line: a client-only slot
 
-Who is signed in can't be drawn by the server, so under hydration it has to
-be an empty slot inside the shared root, drawn empty by the server and by
-the first client render and filled by an effect. agentkit 0.162.0's
-`FeedIsland` has no slot, and a second Dioxus root beside the island
-doesn't work either: with `hydrate` on, every root hydrates, and a second
-one would need server markup the server can't draw. So `src/session.rs`
-(state, writes, view, and its bootstrap in an effect) is built and tested
-on the host but not drawn, until agentkit's root has a client-only slot
-this crate fills with `session::SessionStatus`. The session itself is
-provided at the root (`session::provide` in `island_dom`), not by the
-slot's component, so any component in the island can read it; the first
-reader to mount starts the bootstrap, in an effect.
+Who is signed in can't be drawn by the server, so under hydration it is an
+empty slot inside the shared root: agentkit's `ui::ClientOnly`, which
+`FeedIsland` draws first (`<!--placeholder0-->` in the server's markup).
+It is empty on the server and in the client's first render, and after
+mount draws the component the client gives that slot in root context:
+`ClientSlots::new().with(ClientSlot::Session, session_line)` in
+`island_dom`. `session_line` (`src/main.rs`) draws `session::SessionStatus`
+and the version line ("Agora web client X, built with agora-agentkit Y")
+in a `.session-slot`. A second Dioxus root beside the island wouldn't
+work: with `hydrate` on, every root hydrates, and it would need server
+markup the server can't draw.
+
+The session itself is provided at the root (`session::provide` in
+`island_dom`), not by the slot's component, so any component in the island
+can read it; the first reader to mount starts the bootstrap, in an effect.
+
+The slot fills in after mount, above the feed, so `assets/site.css`
+reserves its height: padding on `#agora-app` until the `.session-slot`
+appears, then the slot's own `min-height` (only with scripting on, since
+without it the slot never fills). It takes effect on agora's pages once
+they link this stylesheet (agora#1256).
 
 ### How to test it
 
@@ -321,6 +331,8 @@ reader to mount starts the bootstrap, in an effect.
 - In a browser: agora's `just browser-test` (`tests/browser_island.rs`
   there) builds this client and a server that pre-renders, and checks in
   Chromium that the posts are in the HTML before any wasm runs, that the
+  session slot is an empty placeholder there and fills in after load
+  ("Not signed in.", the version line) without touching the feed's nodes, that the
   page makes no feed fetch on load, that the server's elements are the
   same objects after hydration, that Refresh works, and that a page from
   another agentkit stays static without a reload loop. A fresh-mount

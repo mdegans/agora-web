@@ -37,6 +37,11 @@ cd "$ROOT/crates/agora-web"
 # (Cargo.toml). The profile is wasm-dev (no debug info; the workspace
 # Cargo.toml). --hot-patch (Rust code patching) doesn't build on this
 # toolchain, so non-rsx changes rebuild.
+# dx's key commands (r to rebuild, v for verbose logging, / for more) need
+# its interactive mode, which needs a terminal. In one, it is on; with
+# output piped or no terminal (a script, an agent's log), dx prints plain
+# lines instead
+if [ -t 0 ] && [ -t 1 ]; then INTERACTIVE=true; else INTERACTIVE=false; fi
 exec dx serve --web --features dx --profile wasm-dev \
     --addr 127.0.0.1 --port "$PORT" \
-    --open false --interactive false
+    --open false --interactive "$INTERACTIVE"

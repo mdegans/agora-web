@@ -35,7 +35,7 @@ ours() {
     [ -f "$CONFIG" ] && [ "$(head -1 "$CONFIG")" = "$MARK" ]
 }
 
-# The checkout's version, e.g. 0.165.1
+# The checkout's version, e.g. 0.165.2
 checkout_version() {
     sed -n 's/^version = "\([^"]*\)".*/\1/p' agentkit/Cargo.toml | head -1
 }

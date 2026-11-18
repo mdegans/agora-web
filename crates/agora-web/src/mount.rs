@@ -230,11 +230,31 @@ pub fn fresh() {
         root.set_inner_html("");
     }
     // The data block, if any, is the upstream's: left alone, unread
-    let path = web_sys::window()
-        .map(|w| w.location())
+    let location = web_sys::window().map(|w| w.location());
+    let path = location
+        .as_ref()
         .and_then(|l| Some(l.pathname().ok()? + &l.search().ok()?))
         .unwrap_or_default();
-    let (page, unread) = fresh_page(&path);
+    // The page's origin is the site: a body's absolute links to it are its
+    // own (`ThreadPage::at`). Without one, only relative links are
+    let origin = location.as_ref().and_then(|l| l.origin().ok());
+    let site = match origin.as_deref().map(url::Url::parse) {
+        Some(Ok(site)) => Some(site),
+        Some(Err(e)) => {
+            web_sys::console::warn_1(
+                &format!("agora-web: the page's origin doesn't parse ({e}); no site for its links")
+                    .into(),
+            );
+            None
+        }
+        None => {
+            web_sys::console::warn_1(
+                &"agora-web: the page's origin is unreadable; no site for its links".into(),
+            );
+            None
+        }
+    };
+    let (page, unread) = fresh_page(&path, site.as_ref());
     if let Some(warning) = unread {
         web_sys::console::warn_1(&warning.into());
     }
@@ -252,11 +272,12 @@ pub fn fresh() {
 /// address the link parser refuses (an unknown query key, an offset out of
 /// range). A fresh mount has no community header: the feed's [`Reload`]
 /// loads posts only, so a community's page reads "All Posts" in the dev
-/// build (the release build hydrates the server's header)
+/// build (the release build hydrates the server's header). A thread's page
+/// is on `site` (the page's origin), as the server's is on its public URL
 ///
 /// [`Reload`]: agora_agentkit::ui::Reload
 #[cfg_attr(feature = "hydrate", allow(dead_code))]
-pub fn fresh_page(path_and_query: &str) -> (Page, Option<String>) {
+pub fn fresh_page(path_and_query: &str, site: Option<&url::Url>) -> (Page, Option<String>) {
     let global = || FeedPage::new(FeedPage::input(), FeedLoad::Pending).into();
     let path = path_and_query.split('?').next().unwrap_or_default();
     // The app's own page (and dx's), or no page of the site's at all
@@ -274,10 +295,14 @@ pub fn fresh_page(path_and_query: &str) -> (Page, Option<String>) {
             kind: ContentKind::Post,
             read,
         })) => match read.id {
-            ContentRef::Content(id) => (
-                ThreadPage::new(PostId::from(*id.as_uuid()), ThreadLoad::Pending).into(),
-                None,
-            ),
+            ContentRef::Content(id) => {
+                let page = ThreadPage::new(PostId::from(*id.as_uuid()), ThreadLoad::Pending);
+                let page = match site {
+                    Some(site) => page.at(site),
+                    None => page,
+                };
+                (page.into(), None)
+            }
             _ => (global(), unread("names a post by a short id".into())),
         },
         Some(Ok(_)) => (global(), unread("is no feed's or post's page".into())),
@@ -412,15 +437,16 @@ mod tests {
     fn a_fresh_mount_draws_the_page_its_address_names() {
         let post = agora_agentkit::fixtures::post().id;
         assert_eq!(
-            fresh_page(&format!("/agora/post/{post}")),
+            fresh_page(&format!("/agora/post/{post}"), None),
             (
                 Page::Thread(ThreadPage::new(post, ThreadLoad::Pending)),
                 None
             )
         );
-        let (Page::Feed(feed), None) =
-            fresh_page("/agora/community/meta-governance?sort=active&offset=25&limit=10")
-        else {
+        let (Page::Feed(feed), None) = fresh_page(
+            "/agora/community/meta-governance?sort=active&offset=25&limit=10",
+            None,
+        ) else {
             panic!("not a feed");
         };
         assert_eq!(feed.feed, FeedLoad::Pending);
@@ -438,7 +464,7 @@ mod tests {
             "/",
             "",
         ] {
-            assert_eq!(fresh_page(path), (global.clone(), None), "{path}");
+            assert_eq!(fresh_page(path, None), (global.clone(), None), "{path}");
         }
         for path in [
             "/agora/post/8dbc9b3a",
@@ -447,12 +473,34 @@ mod tests {
             "/agora/feed?bogus=1",
             "/agora/gov",
         ] {
-            let (page, warning) = fresh_page(path);
+            let (page, warning) = fresh_page(path, None);
             assert_eq!(page, global, "{path}");
             let warning = warning.unwrap_or_else(|| panic!("{path}: no warning"));
             assert!(warning.contains(path), "{warning}");
             assert!(warning.contains("drawing the global feed"), "{warning}");
         }
+    }
+
+    /// A fresh mount's thread is on the page's origin, so a body's absolute
+    /// links to it are the site's own; with no origin, on none
+    #[test]
+    fn a_fresh_thread_is_on_the_pages_origin() {
+        let post = agora_agentkit::fixtures::post().id;
+        let site = url::Url::parse("http://localhost:8089").unwrap();
+        let (Page::Thread(page), None) = fresh_page(&format!("/agora/post/{post}"), Some(&site))
+        else {
+            panic!("not a thread");
+        };
+        assert_eq!(page, ThreadPage::new(post, ThreadLoad::Pending).at(&site));
+        assert_eq!(page.site.as_ref(), Some(&site));
+        let (Page::Thread(page), None) = fresh_page(&format!("/agora/post/{post}"), None) else {
+            panic!("not a thread");
+        };
+        assert_eq!(page.site, None);
+        // A feed has no site to carry
+        let (Page::Feed(_), None) = fresh_page("/agora/feed", Some(&site)) else {
+            panic!("not a feed");
+        };
     }
 
     /// No block, or one that isn't this island's JSON: stay, no reload

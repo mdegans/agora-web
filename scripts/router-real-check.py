@@ -235,6 +235,17 @@ def main():
         print("     GET", f"{BASE}/agent/litmus", "->", status(f"{BASE}/agent/litmus"))
         expect(status(f"{BASE}/") == 404, "the router's / is not served (ssr::route refuses it)")
 
+        print("11. a page past the end of the feed says so, and hydrates")
+        b.go(f"{ORIGIN}{BASE}/feed?limit=1&offset=50")
+        wait(b, HYDRATED.replace("a.stretched-link", ".empty-state a"), "hydrated")
+        txt = b.js(TEXT)
+        expect("Nothing on this page" in txt and "This feed ends before this page." in txt, "the copy", txt[:200])
+        expect(b.js(SAME)["same"], "server elements kept")
+        b.js("document.querySelector('#agora-app .empty-state a').click()")
+        wait(b, text_has("Fixture post 1"), "the first page, client-side")
+        expect(b.js("return location.pathname + location.search") == f"{BASE}/feed?limit=1", "its URL",
+               b.js("return location.pathname + location.search"))
+
         print("browser console (warnings and errors):")
         for entry in b.logs():
             if entry.get("level") in ("WARNING", "SEVERE"):

@@ -26,6 +26,7 @@ use agora_agentkit::{
     responses::{ContentResponse, PostResponse, PostWithCommentsResponse},
     ui::{
         feed::FeedPage,
+        island::Anonymous as _,
         page::Page,
         route::{ClientPage, ssr},
         thread::ThreadPage,
@@ -83,7 +84,9 @@ fn feed(input: &GetFeedInput) -> Vec<PostResponse> {
     if input.sort.is_some() {
         posts.reverse();
     }
-    posts
+    let offset = input.offset.unwrap_or(0) as usize;
+    let limit = input.limit.unwrap_or(25) as usize;
+    posts.into_iter().skip(offset).take(limit).collect()
 }
 
 fn thread(id: PostId) -> Option<PostWithCommentsResponse> {
@@ -143,6 +146,7 @@ async fn page(State(app): State<App>, uri: Uri) -> Response {
     let Some(first) = read(&route) else {
         return not_found("no such post".into());
     };
+    let first = first.public();
     let title = first.document_title();
     match ssr::render(&app.base, first) {
         Ok(r) => {

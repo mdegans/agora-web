@@ -1,0 +1,14 @@
+[package]
+name = "router-spike-server"
+version = "0.0.0"
+description = "SPIKE: pre-renders agentkit's router at any path, from fixtures, and answers the two API reads"
+publish = false
+edition.workspace = true
+
+# Every crate already in this workspace's graph (dev-server's axum and
+# tokio; agentkit)
+[dependencies]
+agora-agentkit = { workspace = true, features = ["dioxus-ssr", "router", "test-fixtures"] }
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query", "json"] }
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "net", "fs"] }

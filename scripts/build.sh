@@ -41,7 +41,7 @@ if [ -n "$DEV" ]; then
     cargo build --locked --target wasm32-unknown-unknown -p agora-web
     PROFILE_DIR=debug
 else
-    cargo build --release --locked --target wasm32-unknown-unknown -p agora-web --features hydrate
+    cargo build --release --locked --target wasm32-unknown-unknown -p agora-web --features "${AGORA_WEB_FEATURES:-hydrate}"
     PROFILE_DIR=release
 fi
 

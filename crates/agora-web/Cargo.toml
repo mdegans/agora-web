@@ -55,3 +55,5 @@ dx = ["dioxus/devtools"]
 # the island's element and mounts fresh. A hydrating build can't mount fresh
 # at run time: dioxus-web hydrates every launch when the feature is on.
 hydrate = ["dep:dioxus-web"]
+# SPIKE: the whole site behind the Dioxus router (agentkit's `router`)
+router = ["agora-agentkit/router"]

@@ -4,6 +4,8 @@ members = [
     "crates/agora-web",
     # scripts/dev.sh's server (native; not part of the wasm build)
     "crates/dev-server",
+    # SPIKE (router)
+    "crates/router-spike-server",
     # Guard: fails resolution if openssl-sys enters the graph (rustls only).
     "crates/no-openssl",
 ]
@@ -45,3 +47,7 @@ panic = "abort"
 [profile.wasm-dev]
 inherits = "dev"
 debug = false
+
+# SPIKE (router): agentkit's spike/router worktree
+[patch.crates-io]
+agora-agentkit = { path = "../agentkit-router-spike" }

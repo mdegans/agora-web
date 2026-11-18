@@ -300,6 +300,12 @@ pub fn fresh_page(path_and_query: &str) -> (Page, Option<String>) {
 /// - `hydrate_queue`: streamed suspense chunks that arrived before the
 ///   wasm; none. dioxus-interpreter-js reads its `length` when hydration
 ///   starts and throws without it.
+/// SPIKE: the router's launch sets the same globals
+#[cfg(feature = "hydrate")]
+pub fn set_globals() -> Result<(), String> {
+    globals::set()
+}
+
 #[cfg(feature = "hydrate")]
 mod globals {
     use web_sys::{js_sys, wasm_bindgen::JsValue};

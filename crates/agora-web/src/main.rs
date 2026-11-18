@@ -38,6 +38,8 @@ use dioxus::prelude::*;
 mod api;
 mod mount;
 mod session;
+#[cfg(feature = "router")]
+mod site;
 
 // The `dx` feature is `just dev`'s alone: dioxus-web's devtools client and
 // the stylesheet link below. A build with it and without debug assertions
@@ -67,9 +69,11 @@ fn main() {
     // What `LaunchBuilder::launch` would do first; the island is launched
     // with its props (`launch`), which the builder can't pass
     dioxus::logger::initialize_default();
-    #[cfg(feature = "hydrate")]
+    #[cfg(feature = "router")]
+    site::launch();
+    #[cfg(all(feature = "hydrate", not(feature = "router")))]
     mount::hydrate();
-    #[cfg(not(feature = "hydrate"))]
+    #[cfg(all(not(feature = "hydrate"), not(feature = "router")))]
     mount::fresh();
 }
 

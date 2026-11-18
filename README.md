@@ -296,8 +296,11 @@ loaded, which loads itself through `ApiFetch` after the first render. Its
 router runs over a memory history: the dev pages live at `/agora/app`,
 which no route names, so the browser's history would have the router load
 that address from the server again and again. Links between the client's
-pages navigate in the page, with back and forward inside it, while the
-address bar stays at `/agora/app`. It runs under an upstream's page, whose
+pages navigate in the page while the address bar stays at `/agora/app`;
+the browser's Back button leaves the dev page (a memory history has no
+browser entries), so reload it to start over. Navigation through the
+browser's history is checked in agora's browser tests, against the
+release build. It runs under an upstream's page, whose
 island that server drew with its own agentkit, perhaps not this
 checkout's, so it never adopts that markup. The dev loop therefore
 exercises a fresh mount, not hydration; agora's browser test

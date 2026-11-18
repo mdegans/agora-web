@@ -21,14 +21,13 @@ use std::{
 use agora_agentkit::{
     fixtures,
     ids::PostId,
-    links::AgoraLink,
     names::CommunityName,
     requests::GetFeedInput,
     responses::{ContentResponse, PostResponse, PostWithCommentsResponse},
     ui::{
         feed::FeedPage,
         page::Page,
-        route::{Route, ssr},
+        route::{ClientPage, ssr},
         thread::ThreadPage,
     },
 };
@@ -62,6 +61,10 @@ fn posts() -> Vec<PostResponse> {
             if n > 3 {
                 post.community_name = "science".parse::<CommunityName>().unwrap();
             }
+            // A community the API says doesn't exist (a client's 404)
+            if n == 6 {
+                post.community_name = "nowhere".parse::<CommunityName>().unwrap();
+            }
             post
         })
         .collect()
@@ -90,18 +93,14 @@ fn thread(id: PostId) -> Option<PostWithCommentsResponse> {
     Some(read)
 }
 
-/// The page the server reads for a route (the data block's)
-fn read(route: &Route) -> Option<Page> {
-    match &route.0 {
-        AgoraLink::Feed(input) => {
+/// The page the server reads for a route (the data block's); `None` for
+/// a post that isn't there (the 404)
+fn read(page: &ClientPage) -> Option<Page> {
+    match page {
+        ClientPage::Feed(input) => {
             Some(FeedPage::new(input.clone(), feed(input).into_iter().collect()).into())
         }
-        AgoraLink::Content { .. } => {
-            let s = route.to_string();
-            let id: PostId = s.strip_prefix("/post/")?.parse().ok()?;
-            Some(ThreadPage::loaded(thread(id)?).into())
-        }
-        _ => None,
+        ClientPage::Thread(id) => Some(ThreadPage::loaded(thread(*id)?).into()),
     }
 }
 
@@ -127,27 +126,31 @@ async fn page(State(app): State<App>, uri: Uri) -> Response {
     };
     let below = if below.is_empty() { "/".into() } else { below };
     // The 404 is decided here, before anything is drawn
+    let not_found = |why: String| {
+        println!("GET {full} -> 404 ({why})");
+        let body = document(&app, "Not found — Agora", "<h1>Not found</h1><p>No page here.</p>");
+        (
+            StatusCode::NOT_FOUND,
+            [(header::CONTENT_SECURITY_POLICY, CSP)],
+            Html(body),
+        )
+            .into_response()
+    };
     let route = match ssr::route(&below) {
         Ok(route) => route,
-        Err(e) => {
-            println!("GET {full} -> 404 ({e})");
-            let body = document(&app, "Not found", "<h1>Not found</h1><p>No page here.</p>");
-            return (
-                StatusCode::NOT_FOUND,
-                [(header::CONTENT_SECURITY_POLICY, CSP)],
-                Html(body),
-            )
-                .into_response();
-        }
+        Err(e) => return not_found(e.to_string()),
     };
-    let first = read(&route);
-    match ssr::render(&app.base, &below, first) {
+    let Some(first) = read(&route) else {
+        return not_found("no such post".into());
+    };
+    let title = first.document_title();
+    match ssr::render(&app.base, first) {
         Ok(r) => {
-            println!("GET {full} -> 200 ({route})");
+            println!("GET {full} -> 200 ({route:?})");
             let body = format!("{}<div id=\"agora-app\">{}</div>", r.script, r.html);
             (
                 [(header::CONTENT_SECURITY_POLICY, CSP)],
-                Html(document(&app, &route.to_string(), &body)),
+                Html(document(&app, &title, &body)),
             )
                 .into_response()
         }
@@ -158,15 +161,24 @@ async fn page(State(app): State<App>, uri: Uri) -> Response {
 async fn api_feed(
     State(app): State<App>,
     Query(input): Query<GetFeedInput>,
-) -> Json<Vec<PostResponse>> {
+) -> Response {
     let n = app.api_reads.fetch_add(1, Ordering::SeqCst) + 1;
     println!("API #{n}: feed {input:?}");
-    Json(feed(&input))
+    if input.community.as_ref().is_some_and(|c| c == "nowhere") {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "no such community"})))
+            .into_response();
+    }
+    Json(feed(&input)).into_response()
 }
 
 async fn api_content(State(app): State<App>, Path(id): Path<String>) -> Response {
     let n = app.api_reads.fetch_add(1, Ordering::SeqCst) + 1;
     println!("API #{n}: content {id}");
+    // Post 5 is gone from the API (a client's 404 after a navigation)
+    if id == "5b1ce000-0000-4000-8000-000000000005" {
+        return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "no such post"})))
+            .into_response();
+    }
     match id.parse::<PostId>().ok().and_then(thread) {
         Some(read) => Json(ContentResponse::Post(read)).into_response(),
         None => StatusCode::NOT_FOUND.into_response(),

@@ -80,14 +80,15 @@ fn main() {
 /// A feed page's [`Reload`]: the page of the feed the server drew (its
 /// `input`: the community, sort and offset), fetched again. The Refresh and
 /// Try again links, and a fresh mount's first load
-fn reload_feed(input: GetFeedInput) -> Reload<FeedLoad> {
+fn reload_feed(input: GetFeedInput) -> Reload<FeedPage> {
     Reload::new(move || {
         let input = input.clone();
         Box::pin(async move {
-            match api::feed(&input).await {
-                Ok(posts) => feed_loaded(input, posts),
+            let feed = match api::feed(&input).await {
+                Ok(posts) => feed_loaded(input.clone(), posts),
                 Err(e) => FeedLoad::Failed(e.to_string()),
-            }
+            };
+            FeedPage::new(input, feed)
         })
     })
 }
@@ -155,7 +156,7 @@ fn island_dom(page: Page) -> VirtualDom {
 
 /// The one [`Reload`] a page's root reads, by the page's kind
 enum Reloads {
-    Feed(Reload<FeedLoad>),
+    Feed(Reload<FeedPage>),
     Thread(Reload<ThreadLoad>),
 }
 

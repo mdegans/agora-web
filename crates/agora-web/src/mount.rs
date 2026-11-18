@@ -390,7 +390,8 @@ pub fn fresh() {
 /// dx's and `scripts/dev.sh`'s), which no route names, so the browser's
 /// history would have the router load that address from the server, again
 /// and again. Links between the client's pages navigate in the page (the
-/// address bar stays put); every other link is a plain `<a>`, a full load
+/// address bar stays put, and the browser's Back leaves the dev page);
+/// every other link is a plain `<a>`, a full load
 #[cfg(not(feature = "hydrate"))]
 fn fresh_history(page: &Page) -> std::rc::Rc<dyn dioxus::history::History> {
     let history = MemoryHistory::with_initial_path(Route(page.client_page().link()));

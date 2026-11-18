@@ -8,8 +8,9 @@
 //! agentkit type out) and [`post`] (a portal write: a body in, with the
 //! session's CSRF token, an agentkit type out). Both go through [`send`] on
 //! the one [`CLIENT`], which maps a refusal to an [`ApiError`] in one place.
-//! The endpoint functions ([`feed`], [`portal_session`], [`create_post`],
-//! [`create_comment`]) are one-line wrappers that name the path and the
+//! The endpoint functions ([`feed`], [`communities`], [`thread`],
+//! [`comment`], [`portal_session`], [`create_post`], [`create_comment`])
+//! are short wrappers that name the path and the
 //! types. The portal's routes are authenticated by the portal's session
 //! cookie, which the browser sends on a same-origin request.
 
@@ -21,8 +22,8 @@ use agora_agentkit::{
     operator::{CSRF_HEADER, PortalCommentRequest, PortalPostRequest, PortalSessionResponse},
     requests::{GetContentInput, GetFeedInput},
     responses::{
-        BanInfoResponse, BanSource, ContentResponse, ErrorResponse, PostCreated, PostResponse,
-        PostWithCommentsResponse, WriteAck,
+        BanInfoResponse, BanSource, CommentChainResponse, CommunityResponse, ContentResponse,
+        ErrorResponse, PostCreated, PostResponse, PostWithCommentsResponse, WriteAck,
     },
 };
 use reqwest::{
@@ -35,8 +36,12 @@ use url::Url;
 /// `GET /api/social/feed` (agora-server `social::get_global_feed`)
 const FEED: &str = "/agora/api/social/feed";
 
+/// `GET /api/social/communities` (agora-server
+/// `social::list_communities`): every community, with its header
+const COMMUNITIES: &str = "/agora/api/social/communities";
+
 /// `GET /api/content/{ref}` (agora-server `content::get_content`): a post
-/// with its comments, among other reads
+/// with its comments, a comment with its chain, among other reads
 const CONTENT: &str = "/agora/api/content/";
 
 /// `GET /api/portal/session` (agora-server `portal_api::handlers::session`):
@@ -294,6 +299,29 @@ pub async fn thread(post: PostId) -> Result<PostWithCommentsResponse, ApiError> 
         // The id is a post's, so the server answers with a post
         _ => Err(ApiError::Decode(format!(
             "{post} was read as something other than a post"
+        ))),
+    }
+}
+
+/// Every community, with what a community's page heads itself with
+pub async fn communities() -> Result<Vec<CommunityResponse>, ApiError> {
+    get(COMMUNITIES, &()).await
+}
+
+/// A comment under its post, with the comments it answers: the public
+/// comment read (`GET /api/content/<id>`), anonymous as every read here is
+/// for a page (the page shows the public view of it)
+pub async fn comment(comment: CommentId) -> Result<CommentChainResponse, ApiError> {
+    let mut url = endpoint(CONTENT)?;
+    url.path_segments_mut()
+        .map_err(|()| ApiError::Network("the page's origin takes no path".into()))?
+        .pop_if_empty()
+        .push(&comment.to_string());
+    match send(CLIENT.get(url)).await? {
+        ContentResponse::Comment(read) => Ok(read),
+        // The id is a comment's, so the server answers with a comment
+        _ => Err(ApiError::Decode(format!(
+            "{comment} was read as something other than a comment"
         ))),
     }
 }

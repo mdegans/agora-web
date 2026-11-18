@@ -4,8 +4,8 @@
 //! **The release build** (`hydrate`) reads the page's data block
 //! (`script#agora-app-data[type="application/json"]`, agentkit's
 //! [`island`]) as a [`Page`] (which page it is, and the data it was drawn
-//! from) and launches [`PageIsland`](agora_agentkit::ui::page::PageIsland)
-//! with it, so dioxus-web adopts the server's nodes. It can't mount fresh instead: with the feature on, dioxus-web
+//! from) and launches the site's router over it ([`crate::site`]), so
+//! dioxus-web adopts the server's nodes. It can't mount fresh instead: with the feature on, dioxus-web
 //! hydrates every launch. So when the page can't be hydrated ([`plan`]) it
 //! doesn't launch at all, and the server's markup stays as the page it is
 //! for readers without JavaScript (links work; its buttons, which would do
@@ -30,22 +30,30 @@
 //! under a page whose island an upstream server drew with *its* agentkit,
 //! not necessarily this checkout's, so it reads neither the markup nor the
 //! data block. It empties the island's element and mounts the page the
-//! address names ([`fresh_page`]: a feed's or a post's site path), not
-//! loaded, which loads itself through the page's
-//! [`Reload`](agora_agentkit::ui::Reload) after the first render.
+//! address names ([`fresh_page`]: one of the pages the client draws), not
+//! loaded, which loads itself through the site's
+//! [`Fetch`](agora_agentkit::ui::route::Fetch) after the first render.
+//!
+//! Both launch the site behind the router ([`crate::site`]). The release
+//! build also checks the page's `<meta name="agora-base">` against its
+//! agentkit's base ([`check_base`]) and stays, as above, when they differ.
 
 #[cfg(any(feature = "hydrate", test))]
 use agora_agentkit::ui::island::{self, DATA_ID, IslandError};
+use agora_agentkit::ui::route::Route;
 use agora_agentkit::{
-    ids::{ContentRef, PostId},
-    links::{AgoraLink, ContentKind},
+    links::AgoraLink,
     ui::{
-        feed::{FeedLoad, FeedPage},
+        comment::{CommentLoad, CommentPage},
+        feed::FeedPage,
         island::ROOT_ID,
         page::Page,
+        route::{self, ClientPage},
         thread::{ThreadLoad, ThreadPage},
     },
 };
+#[cfg(not(feature = "hydrate"))]
+use dioxus::history::MemoryHistory;
 
 /// The `sessionStorage` key of the reload guard: its value is the
 /// `"<page's agentkit> -> <client's agentkit>"` pair last reloaded for
@@ -152,6 +160,30 @@ pub fn hydrate() {
                 ));
                 return;
             }
+            // The router's links and history are below the base: one the
+            // page doesn't name, or names differently, would send every
+            // navigation somewhere else
+            let base = match check_base(base_meta().as_deref()) {
+                Ok(base) => base,
+                Err(warning) => {
+                    stay(&warning);
+                    return;
+                }
+            };
+            // The router reads the address: it must be the page drawn
+            match address_plan(&location_path(), &page) {
+                Address::Keep => {}
+                Address::Replace(to) => {
+                    if let Err(warning) = replace_address(&to) {
+                        stay(&warning);
+                        return;
+                    }
+                }
+                Address::Stay(warning) => {
+                    stay(&warning);
+                    return;
+                }
+            }
             if let Err(e) = globals::set() {
                 stay(&format!("agora-web: {e}; not starting"));
                 return;
@@ -161,7 +193,10 @@ pub fn hydrate() {
                 // reload once again
                 let _ = storage.remove_item(GUARD_KEY);
             }
-            crate::launch(*page);
+            // `Some` even for "" (the root): `None` would read
+            // dioxus-cli-config's base path instead. Scroll restoration on
+            let history = std::rc::Rc::new(dioxus::web::WebHistory::new(Some(base.into()), true));
+            crate::site::launch(*page, history, crate::site::origin().as_ref());
         }
         Plan::Stay { warning, reload } => {
             stay(&warning);
@@ -174,6 +209,112 @@ pub fn hydrate() {
                 let _ = window.location().reload();
             }
         }
+    }
+}
+
+/// What the release build does about the address it starts at, which the
+/// router reads to know which page it is on
+#[cfg(any(feature = "hydrate", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Address {
+    /// The address is the page the server drew (as typed: its query in
+    /// another order, its `#fragment`, are kept)
+    Keep,
+    /// An address the router doesn't read with a page it draws: the app's
+    /// own page, `/agora/app`, is the global feed's first page. The address
+    /// becomes that page's (`history.replaceState`, no load), or the router
+    /// would load the address from the server, again and again
+    Replace(String),
+    /// The address names another page than the one drawn, or isn't on the
+    /// site: hydrating would draw the wrong page over the server's, so the
+    /// page stays as the server drew it, saying why
+    Stay(String),
+}
+
+/// The plan for `path_and_query` (the address's path and query, as
+/// `location` has them) given the `page` the server drew there
+#[cfg(any(feature = "hydrate", test))]
+pub fn address_plan(path_and_query: &str, page: &Page) -> Address {
+    let base = route::base();
+    let below = path_and_query
+        .strip_prefix(base)
+        .filter(|rest| rest.starts_with('/'));
+    let Some(below) = below else {
+        return Address::Stay(format!(
+            "agora-web: {path_and_query} isn't under the site's base, {base:?}; not starting, \
+             the page stays as the server drew it"
+        ));
+    };
+    match below.parse::<Route>() {
+        Ok(route) if route.page().as_ref() == Some(&page.client_page()) => Address::Keep,
+        Ok(route) => Address::Stay(format!(
+            "agora-web: the address is {route}, the page drawn is {}; not starting, the page \
+             stays as the server drew it",
+            page.client_page().link().site_path()
+        )),
+        Err(_) => Address::Replace(page.client_page().link().site_path()),
+    }
+}
+
+/// The address's path and query, as the router will read them
+#[cfg(feature = "hydrate")]
+fn location_path() -> String {
+    web_sys::window()
+        .map(|w| w.location())
+        .and_then(|l| Some(l.pathname().ok()? + &l.search().ok()?))
+        .unwrap_or_default()
+}
+
+/// The address made `to` without a load (`history.replaceState`), said in
+/// the console; or why not
+#[cfg(feature = "hydrate")]
+fn replace_address(to: &str) -> Result<(), String> {
+    let was = location_path();
+    let history = web_sys::window()
+        .ok_or("agora-web: no window")?
+        .history()
+        .map_err(|_| "agora-web: no history to set the address with; not starting".to_owned())?;
+    history
+        .replace_state_with_url(&web_sys::wasm_bindgen::JsValue::NULL, "", Some(to))
+        .map_err(|_| format!("agora-web: couldn't set the address to {to}; not starting"))?;
+    web_sys::console::info_1(
+        &format!("agora-web: {was} is drawn as {to}, the page it shows; the address is now that")
+            .into(),
+    );
+    Ok(())
+}
+
+/// The base the page says the site is mounted at: its
+/// `<meta name="agora-base" content="…">`, which agora-server writes from
+/// agentkit's `route::base()`
+#[cfg(feature = "hydrate")]
+fn base_meta() -> Option<String> {
+    document()?
+        .query_selector(r#"meta[name="agora-base"]"#)
+        .ok()
+        .flatten()?
+        .get_attribute("content")
+}
+
+/// The base to launch the router under: the page's (`meta`, `None` when
+/// it has none), which must be this client's agentkit's `route::base()`.
+/// Otherwise the warning to stay with: the router's links and history are
+/// below the base, so a page and a client that disagree would send every
+/// navigation to the wrong address
+#[cfg(any(feature = "hydrate", test))]
+pub fn check_base(meta: Option<&str>) -> Result<&'static str, String> {
+    let ours = route::base();
+    match meta {
+        Some(given) if given == ours => Ok(ours),
+        Some(given) => Err(format!(
+            "agora-web: the page says the site is at {given:?}, this client's agentkit at \
+             {ours:?}; not starting, the page stays as the server drew it"
+        )),
+        None => Err(
+            "agora-web: this page doesn't say where the site is (meta agora-base); \
+             not starting, the page stays as the server drew it"
+                .to_owned(),
+        ),
     }
 }
 
@@ -230,58 +371,58 @@ pub fn fresh() {
         root.set_inner_html("");
     }
     // The data block, if any, is the upstream's: left alone, unread
-    let location = web_sys::window().map(|w| w.location());
-    let path = location
-        .as_ref()
+    let path = web_sys::window()
+        .map(|w| w.location())
         .and_then(|l| Some(l.pathname().ok()? + &l.search().ok()?))
         .unwrap_or_default();
     // The page's origin is the site: a body's absolute links to it are its
     // own (`ThreadPage::at`). Without one, only relative links are
-    let origin = location.as_ref().and_then(|l| l.origin().ok());
-    let site = match origin.as_deref().map(url::Url::parse) {
-        Some(Ok(site)) => Some(site),
-        Some(Err(e)) => {
-            web_sys::console::warn_1(
-                &format!("agora-web: the page's origin doesn't parse ({e}); no site for its links")
-                    .into(),
-            );
-            None
-        }
-        None => {
-            web_sys::console::warn_1(
-                &"agora-web: the page's origin is unreadable; no site for its links".into(),
-            );
-            None
-        }
-    };
+    let site = crate::site::origin();
     let (page, unread) = fresh_page(&path, site.as_ref());
     if let Some(warning) = unread {
         web_sys::console::warn_1(&warning.into());
     }
-    crate::launch(page);
+    crate::site::launch(page.clone(), fresh_history(&page), site.as_ref());
 }
 
-/// The page a fresh mount draws at `path_and_query`, not loaded: a post's
-/// page (`/agora/post/<id>`) is that thread, a feed's (`/agora/feed`,
-/// `/agora/community/<name>`, with their sort, offset and limit, `limit`
-/// passed on as given: the API clamps it, and so does the page's paging)
-/// that page of it, and `/agora/app` (dx's page too) the global feed's
-/// first page. Any other address draws the global feed with a warning
-/// naming it, for the console: a short id or a comment's page (the server
-/// sends both elsewhere before a client loads), another kind's page, an
-/// address the link parser refuses (an unknown query key, an offset out of
-/// range). A fresh mount has no community header: the feed's [`Reload`]
-/// loads posts only, so a community's page reads "All Posts" in the dev
-/// build (the release build hydrates the server's header). A thread's page
-/// is on `site` (the page's origin), as the server's is on its public URL
-///
-/// [`Reload`]: agora_agentkit::ui::Reload
+/// The dev build's history: a memory history at `page`'s route, below the
+/// site's base. The dev pages live at the app's own address (`/agora/app`,
+/// dx's and `scripts/dev.sh`'s), which no route names, so the browser's
+/// history would have the router load that address from the server, again
+/// and again. Links between the client's pages navigate in the page (the
+/// address bar stays put); every other link is a plain `<a>`, a full load
+#[cfg(not(feature = "hydrate"))]
+fn fresh_history(page: &Page) -> std::rc::Rc<dyn dioxus::history::History> {
+    let history = MemoryHistory::with_initial_path(Route(page.client_page().link()));
+    std::rc::Rc::new(match route::base() {
+        "" => history,
+        base => history.with_prefix(base),
+    })
+}
+
+/// The page a fresh mount draws at `path_and_query`, not loaded: one of
+/// the pages the client draws (agentkit's one list, `ClientPage::of`: a
+/// feed's page, `/agora/feed` or `/agora/community/<name>` with their
+/// sort, offset and limit, `limit` passed on as given, the API clamps it;
+/// a post's thread; a comment's page), and `/agora/app` (dx's page too)
+/// the global feed's first page. Any other address draws the global feed
+/// with a warning naming it, for the console: a page the server draws (a
+/// short id, a governance entry, a profile), or an address the link parser
+/// refuses (an unknown query key, an offset out of range). A fresh
+/// community page loads its header with its posts. A thread's or
+/// comment's page is on `site` (the page's origin), as the server's is on
+/// its public URL
 #[cfg_attr(feature = "hydrate", allow(dead_code))]
 pub fn fresh_page(path_and_query: &str, site: Option<&url::Url>) -> (Page, Option<String>) {
-    let global = || FeedPage::new(FeedPage::input(), FeedLoad::Pending).into();
+    let global = || FeedPage::pending(FeedPage::input()).into();
     let path = path_and_query.split('?').next().unwrap_or_default();
+    let base = route::base();
+    let app = [base, "/app"].concat();
     // The app's own page (and dx's), or no page of the site's at all
-    if path == "/agora/app" || path.starts_with("/agora/app/") || !path.starts_with("/agora/") {
+    if path == app
+        || path.starts_with(&[app.as_str(), "/"].concat())
+        || !path.starts_with(&[base, "/"].concat())
+    {
         return (global(), None);
     }
     let unread = |why: String| {
@@ -290,22 +431,29 @@ pub fn fresh_page(path_and_query: &str, site: Option<&url::Url>) -> (Page, Optio
         ))
     };
     match AgoraLink::from_site_path(path_and_query) {
-        Some(Ok(AgoraLink::Feed(input))) => (FeedPage::new(input, FeedLoad::Pending).into(), None),
-        Some(Ok(AgoraLink::Content {
-            kind: ContentKind::Post,
-            read,
-        })) => match read.id {
-            ContentRef::Content(id) => {
-                let page = ThreadPage::new(PostId::from(*id.as_uuid()), ThreadLoad::Pending);
+        Some(Ok(link)) => match ClientPage::of(&link) {
+            Some(ClientPage::Feed(input)) => (FeedPage::pending(input).into(), None),
+            Some(ClientPage::Thread(post)) => {
+                let page = ThreadPage::new(post, ThreadLoad::Pending);
                 let page = match site {
                     Some(site) => page.at(site),
                     None => page,
                 };
                 (page.into(), None)
             }
-            _ => (global(), unread("names a post by a short id".into())),
+            Some(ClientPage::Comment(comment)) => {
+                let page = CommentPage::new(comment, CommentLoad::Pending);
+                let page = match site {
+                    Some(site) => page.at(site),
+                    None => page,
+                };
+                (page.into(), None)
+            }
+            None => (
+                global(),
+                unread(format!("is {link}, a page the server draws")),
+            ),
         },
-        Some(Ok(_)) => (global(), unread("is no feed's or post's page".into())),
         Some(Err(e)) => (global(), unread(format!("doesn't read as a link ({e})"))),
         None => (global(), None),
     }
@@ -356,8 +504,12 @@ mod globals {
 mod tests {
     use agora_agentkit::{
         requests::GetFeedInput,
-        ui::{island::AGENTKIT_VERSION, page::PageIsland, ssr},
+        ui::{
+            feed::FeedLoad,
+            island::{AGENTKIT_VERSION, Anonymous},
+        },
     };
+    use dioxus::prelude::VirtualDom;
 
     use super::*;
     use crate::test_pages;
@@ -374,7 +526,7 @@ mod tests {
     /// The block's text, as the server writes it (agentkit's
     /// `script_element`), without its tags
     fn block_text(page: &Page) -> String {
-        island::to_script_text(page).unwrap()
+        island::to_script_text(&page.clone().public()).unwrap()
     }
 
     /// A block as another agentkit would have written it
@@ -408,20 +560,97 @@ mod tests {
     }
 
     /// What the client launches from the server's block draws the server's
-    /// markup, for every page: the block read by [`plan`], then the
-    /// `VirtualDom` `launch` mounts (`crate::island_dom`)
+    /// markup, for every page: the page agora-server draws through the
+    /// router (`route::ssr::render`), its block read by [`plan`], then the
+    /// `VirtualDom` the launch mounts (`crate::site::dom`) under the history
+    /// the browser's would read
     #[test]
-    fn the_hydrated_island_draws_the_servers_markup() {
+    fn the_hydrated_site_draws_the_servers_markup() {
+        use dioxus::history::{History, MemoryHistory};
         for page in test_pages::all() {
-            let server = ssr::render_island(DATA_ID, PageIsland, page.clone()).unwrap();
+            let server = route::ssr::render(route::base(), page.clone().public()).unwrap();
             let Plan::Hydrate(read) =
                 plan(Some(&server_block(&server.script)), &Guard::Unavailable)
             else {
                 panic!("not hydrated: {page:?}");
             };
-            let mut dom = crate::island_dom(*read);
+            let history = MemoryHistory::with_initial_path(agora_agentkit::ui::route::Route(
+                read.client_page().link(),
+            ))
+            .with_prefix(route::base());
+            let mut dom: VirtualDom = crate::site::dom(*read, Some(&test_pages::site()))
+                .with_root_context(std::rc::Rc::new(history) as std::rc::Rc<dyn History>);
             dom.rebuild_in_place();
             assert_eq!(dioxus_ssr::pre_render(&dom), server.html, "{page:?}");
+        }
+    }
+
+    /// The router starts at the page the server drew: at its address as
+    /// typed (another order, a fragment); `/agora/app`, which no route
+    /// names, becomes the page it shows; an address naming another page,
+    /// or off the site, stays
+    #[test]
+    fn the_router_starts_at_the_page_drawn() {
+        let feed = test_pages::feed();
+        let thread = test_pages::thread();
+        // The query in another order than the canonical one: the page the
+        // server read from that same address
+        let typed = "/agora/feed?offset=0&sort=active";
+        let Some(Ok(agora_agentkit::links::AgoraLink::Feed(input))) =
+            agora_agentkit::links::AgoraLink::from_site_path(typed)
+        else {
+            panic!("a feed's address")
+        };
+        let sorted: Page = FeedPage::pending(input).into();
+        assert_eq!(address_plan(typed, &sorted), Address::Keep);
+        assert_eq!(
+            address_plan("/agora/feed?sort=active&offset=0", &sorted),
+            Address::Keep
+        );
+        assert_eq!(address_plan("/agora/feed", &feed), Address::Keep);
+        let Page::Thread(t) = &thread else { panic!() };
+        assert_eq!(
+            address_plan(&format!("/agora/post/{}", t.post), &thread),
+            Address::Keep
+        );
+        for app in ["/agora/app", "/agora/app/", "/agora/app?x=1"] {
+            assert_eq!(
+                address_plan(app, &feed),
+                Address::Replace("/agora/feed".into()),
+                "{app}"
+            );
+        }
+        let Address::Stay(warning) = address_plan("/agora/feed", &thread) else {
+            panic!("a thread drawn at the feed's address")
+        };
+        assert!(warning.contains("not starting"), "{warning}");
+        assert!(matches!(
+            address_plan("/elsewhere/feed", &feed),
+            Address::Stay(_)
+        ));
+        assert!(matches!(
+            address_plan("/agorafeed", &feed),
+            Address::Stay(_)
+        ));
+    }
+
+    /// The page's base must be this client's: anything else, or none, is a
+    /// page the client stays off, saying why
+    #[test]
+    fn the_router_starts_only_under_its_own_base() {
+        assert_eq!(check_base(Some(route::base())), Ok(route::base()));
+        for (meta, said) in [
+            (None, "doesn't say where the site is"),
+            (
+                Some("/elsewhere"),
+                "the page says the site is at \"/elsewhere\"",
+            ),
+            (Some(""), "the page says the site is at \"\""),
+            (Some("/agora/"), "the page says the site is at \"/agora/\""),
+        ] {
+            let warning = check_base(meta).unwrap_err();
+            assert!(warning.contains(said), "{meta:?}: {warning}");
+            assert!(warning.contains("not starting"), "{meta:?}: {warning}");
         }
     }
 
@@ -440,6 +669,16 @@ mod tests {
             fresh_page(&format!("/agora/post/{post}"), None),
             (
                 Page::Thread(ThreadPage::new(post, ThreadLoad::Pending)),
+                None
+            )
+        );
+        // A comment's page by its full id is the client's since agentkit
+        // 0.170.0
+        let comment = agora_agentkit::fixtures::comment().id;
+        assert_eq!(
+            fresh_page(&format!("/agora/comment/{comment}"), None),
+            (
+                Page::Comment(CommentPage::new(comment, CommentLoad::Pending)),
                 None
             )
         );
@@ -468,7 +707,7 @@ mod tests {
         }
         for path in [
             "/agora/post/8dbc9b3a",
-            &format!("/agora/comment/{}", agora_agentkit::fixtures::comment().id),
+            "/agora/comment/8dbc9b3a",
             "/agora/feed?offset=99999999999",
             "/agora/feed?bogus=1",
             "/agora/gov",

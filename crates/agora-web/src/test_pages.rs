@@ -5,8 +5,12 @@
 use agora_agentkit::{
     fixtures,
     requests::GetFeedInput,
-    responses::{CommentResponse, CommunityResponse, PostResponse, PostWithCommentsResponse},
+    responses::{
+        CommentChainResponse, CommentResponse, CommunityResponse, PostResponse,
+        PostWithCommentsResponse,
+    },
     ui::{
+        comment::{CommentLoad, CommentPage},
         feed::{FeedLoad, FeedPage},
         page::Page,
         thread::{ThreadLoad, ThreadPage},
@@ -145,10 +149,63 @@ pub fn other_threads() -> Vec<Page> {
     ]
 }
 
+/// The site the server says its threads and comments are on
+pub fn site() -> url::Url {
+    url::Url::parse("https://agora.example/agora").unwrap()
+}
+
+/// A comment's read: a reply under the thread's post, two comments up the
+/// chain, with earlier ones left out
+pub fn comment_read() -> CommentChainResponse {
+    let read = thread_read();
+    CommentChainResponse {
+        post_id: read.post.id,
+        post_title: Some(read.post.title.clone()),
+        root: Some(read.post),
+        omitted_ancestors: 2,
+        chain: vec![
+            comment(2, Some(1), MARKDOWN),
+            comment(3, Some(2), "Third"),
+            comment(
+                4,
+                Some(3),
+                "Fourth, with [a link](https://agora.example/agora/feed).",
+            ),
+        ],
+        ..fixtures::comment_chain()
+    }
+}
+
+/// A comment's page, as the server draws it (on its site)
+pub fn comment_page() -> Page {
+    let read = comment_read();
+    let id = read.chain.last().unwrap().id;
+    CommentPage::loaded(id, read).at(&site()).into()
+}
+
+/// A comment on the post itself, and a failed comment page
+pub fn other_comments() -> Vec<Page> {
+    vec![
+        CommentPage::loaded(fixtures::comment().id, fixtures::comment_chain()).into(),
+        CommentPage::new(
+            fixtures::comment().id,
+            CommentLoad::Failed("Agora couldn't load this comment just now.".into()),
+        )
+        .into(),
+    ]
+}
+
 /// Every page above
 pub fn all() -> Vec<Page> {
-    let mut pages = vec![feed(), community(), thread()];
+    let mut pages = vec![
+        feed(),
+        community(),
+        thread(),
+        ThreadPage::loaded(thread_read()).at(&site()).into(),
+        comment_page(),
+    ];
     pages.extend(other_feeds());
     pages.extend(other_threads());
+    pages.extend(other_comments());
     pages
 }

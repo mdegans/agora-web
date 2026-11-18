@@ -75,9 +75,9 @@ enum Session { Loading, SignedOut, SignedIn(SignedIn), Failed(ApiError) }
 operator's poster if it has one) and, once a write has been refused for it,
 the suspension. Its `Debug` shows the token as `[REDACTED]`.
 
-- **Provided at the root, fetched once per page.** `session::provide`
-  puts one `SessionHandle` in the island's root context (`island_dom`,
-  `src/main.rs`). The first component to read it starts
+- **Provided at the root, fetched once per page load.** `session::provide`
+  puts one `SessionHandle` in the site's root context (`site::dom`); a
+  navigation in the page keeps it. The first component to read it starts
   `GET /agora/api/portal/session`, in an effect after the first render
   (never while rendering, which hydration needs); a page that reads it
   nowhere fetches nothing. Drawn in
@@ -210,9 +210,12 @@ scripts, which the page's CSP refuses.
 Every page with an island (`/agora/app`, and with agora-server's forum
 switch on, the forum's own pages: see "Pages" below):
 
-- inside `<div id="agora-app">` (agentkit `island::ROOT_ID`), the island's
-  root, agentkit's `ui::page::PageIsland`, rendered from a `ui::page::Page`
-  (`Page::render`) with the markers dioxus-web's hydration reads
+- `<meta name="agora-base" content="/agora">`: where the site is mounted,
+  agentkit's `ui::route::base()`, which the client's router works below;
+- inside `<div id="agora-app">` (agentkit `island::ROOT_ID`), the site's
+  root, agentkit's `ui::route::SiteRoot` (the Dioxus router), rendered at
+  the page's route from a `ui::page::Page` (`route::ssr::render`) with the
+  markers dioxus-web's hydration reads
   (`data-node-hydration`, `<!--node-id…-->`, `<!--placeholder…-->`);
 - before it, the data the root was drawn from (**the server must place the
   block before any user-supplied markup**: the client finds it by id, and
@@ -223,8 +226,9 @@ switch on, the forum's own pages: see "Pages" below):
   drew the markup (`island::script_element`). No browser runs it, so the
   CSP (`script-src 'self' 'wasm-unsafe-eval'`, unchanged) doesn't apply;
 - the data is what the API returns for the same page, read by the same
-  server code, as a reader who isn't signed in (agentkit's `island::Public`
-  clears anything reader-specific when the page is rendered). If the read
+  server code, as a reader who isn't signed in (the server calls
+  `.public()` once, agentkit's `island::Anonymous`, and only an
+  `island::Public` can be rendered). If the read
   fails or takes too long, the page still renders, with a failure for the
   public in place of the posts.
 
@@ -238,11 +242,27 @@ The release build (`scripts/build.sh`, `--features hydrate`; `src/mount.rs`):
 2. sets the two `window` globals dioxus-web's hydration reads and
    dioxus-fullstack would have set inline (`initial_dioxus_hydration_data`
    = base64 of CBOR `[]`, `hydrate_queue` = `[]`);
-3. launches `PageIsland` with that `Page`, the page's `Reload` (the
-   Refresh and Try again links' fetch), the client-only slots and the
-   session in root context (`island_dom` in `src/main.rs`, the one function
-   both the launch and the host tests use), and dioxus-web adopts the
-   server's nodes. Nothing is fetched on load.
+3. reads `<meta name="agora-base">` and stays (below) unless it is its own
+   agentkit's `route::base()`;
+4. launches agentkit's `SiteRoot` over the browser's history
+   (`WebHistory::new(Some(base), true)`) with, in root context, the page
+   data (`PageData::client(page, ApiFetch)`, on the page's origin), the
+   client-only slots, the session and `DocumentTitle`, which sets
+   `document.title` (`site::dom` in `src/site.rs`, the one function both the
+   launch and the host tests use), and dioxus-web adopts the server's
+   nodes. Nothing is fetched on load.
+
+After that, a link to a page the client draws (agentkit's one list,
+`route::ClientPage::of`: a feed, a community's feed, a post's thread, a
+comment's page) navigates in the page: the router pushes the address, and
+the page loads its data through `site::ApiFetch` (the public API, read
+anonymously; a missing community, post or comment is drawn as not found,
+any other failure in words for the public with the detail in the console).
+Back and forward redraw from the address (there is no page cache). Every
+other link, including every link written in a post or comment, is a plain
+`<a>`: a full page load. agentkit's `SiteRoot` keeps the address as typed
+(its `#fragment` and the scroll it set) and loads any address it doesn't
+draw from the server.
 
 **When it can't hydrate, it doesn't launch.** A hydrating build can't mount
 fresh at run time (dioxus-web hydrates every launch with the feature on),
@@ -252,8 +272,9 @@ are disabled. One console warning says why. There is deliberately no
 fresh-mount fallback in the release build.
 
 - No data block, one that isn't readable JSON of this island, an empty
-  or missing `#agora-app` (nothing to adopt), or the hydration globals
-  couldn't be set: nothing else is tried.
+  or missing `#agora-app` (nothing to adopt), no `agora-base` or another
+  base than this client's, or the hydration globals couldn't be set:
+  nothing else is tried.
 - A block from another agentkit (`IslandError::Version`: the page and the
   client come from different builds, a deploy or a cache in between): the
   page reloads **once** to get the client the server now has. It is a
@@ -269,11 +290,14 @@ fresh-mount fallback in the release build.
 
 The dev build (`scripts/build.sh --dev`, which `scripts/dev.sh` serves,
 and `dx serve`) has no `hydrate`: it empties `#agora-app` and mounts the
-page its address names (`mount::fresh_page`: a post's page, a feed's, or
-the global feed for anything else), not loaded, which loads itself through
-the `Reload` after the first render. A fresh mount has no community
-header (the feed's `Reload` loads posts only), so a community's page reads
-"All Posts" in the dev build. It runs under an upstream's page, whose
+site at the page its address names (`mount::fresh_page`: a page the client
+draws, or the global feed for anything else, `/agora/app` included), not
+loaded, which loads itself through `ApiFetch` after the first render. Its
+router runs over a memory history: the dev pages live at `/agora/app`,
+which no route names, so the browser's history would have the router load
+that address from the server again and again. Links between the client's
+pages navigate in the page, with back and forward inside it, while the
+address bar stays at `/agora/app`. It runs under an upstream's page, whose
 island that server drew with its own agentkit, perhaps not this
 checkout's, so it never adopts that markup. The dev loop therefore
 exercises a fresh mount, not hydration; agora's browser test
@@ -290,12 +314,14 @@ same root and data on both sides; nothing drawn reads the clock, locale,
 client-only state is an empty slot filled by an effect; every text drawn
 as text). For this crate:
 
-- **The root is agentkit's, with the server's props**, unwrapped: no
+- **The root is agentkit's, with the server's page**, unwrapped: no
   wrapper component, no extra node, no context that changes what is
-  drawn. Only a `Reload` goes in context.
+  drawn. The contexts are the ones `site::dom` gives: the page data, the
+  slots, the session and the title.
 - **Dioxus is pinned exactly** (`=0.7.10`, agentkit's pin, and
   `dioxus-web` here). agora-server's build checks that the packages that
-  decide the markup (every `dioxus*` crate, `agora-agentkit`, `chrono`,
+  decide the markup (every `dioxus*` crate, the router and history
+  included, `agora-agentkit`, `chrono`,
   `askama_escape`, `generational-box`) are the same version and source in
   agora's `Cargo.lock` and this one's, and fails naming them if not.
 - **A change to what a shared component draws is an agentkit release**,
@@ -310,14 +336,14 @@ markup).
 It is empty on the server and in the client's first render, and after
 mount draws the component the client gives that slot in root context:
 `ClientSlots::new().with(ClientSlot::Session, session_line)` in
-`island_dom`. `session_line` (`src/main.rs`) draws `session::SessionStatus`
+`site::dom`. `session_line` (`src/main.rs`) draws `session::SessionStatus`
 and the version line ("Agora web client X, built with agora-agentkit Y")
 in a `.session-slot`. A second Dioxus root beside the island wouldn't
 work: with `hydrate` on, every root hydrates, and it would need server
 markup the server can't draw.
 
 The session itself is provided at the root (`session::provide` in
-`island_dom`), not by the slot's component, so any component in the island
+`site::dom`), not by the slot's component, so any component in the island
 can read it; the first reader to mount starts the bootstrap, in an effect.
 
 The slot fills in after mount, above the page, so `assets/site.css`
@@ -340,43 +366,49 @@ same placeholder.
 
 ### Pages
 
-A page kind is a `ui::page::Page` variant, drawn by `PageIsland`: today
-`Feed` (`/agora/app`, `/agora/feed`, `/agora/community/<name>`, with their
-sort and paging) and `Thread` (`/agora/post/<id>`). How one reaches the
-client:
+A page kind is a `ui::page::Page` variant: today `Feed` (`/agora/feed`,
+`/agora/community/<name>`, with their sort and paging, and `/agora/app`),
+`Thread` (`/agora/post/<id>`) and `Comment` (`/agora/comment/<id>`). Which
+links the client draws is agentkit's one list, `route::ClientPage::of`;
+the router's routes are agentkit's `AgoraLink` paths (`route::Route`), so
+there is no route table here. How a page reaches the client:
 
-1. agora-server reads the page's data as the API does and renders
-   `Page::Variant(…)` with `Page::render` into its page template; the data
-   block carries the `Page`, tagged with its kind
+1. agora-server reads the page's data as the API does and renders it
+   through the router (`route::ssr::render`) into its page template; the
+   data block carries the `Page`, tagged with its kind
    (`{"page": "thread", "data": {…}}`).
-2. The client reads the block back as a `Page` (`mount::plan`) and
-   `island_dom` matches on it once, only to put the page's `Reload` in root
-   context: `Reload<FeedLoad>` from the feed's `GetFeedInput`
-   (`api::feed`), `Reload<ThreadLoad>` from the post's id (`api::thread`,
-   `GET /agora/api/content/{id}` at the page's comment budget). Nothing
-   else in the client knows the page kinds.
-3. Links between pages are plain `<a href>`s to server pages: there is no
-   client router. Following one loads the next page from the server, which
-   hydrates in turn.
+2. The client reads the block back as a `Page` (`mount::plan`) and gives
+   it to the router as the first page (`route::PageData`); the route
+   component for the address takes it.
+3. A navigation to another client page loads its data through
+   `site::ApiFetch` (agentkit's `route::Fetch`): `api::feed` (and
+   `api::communities` for a community's header), `api::thread`
+   (`GET /agora/api/content/{id}` at the page's comment budget),
+   `api::comment` (`GET /agora/api/content/{id}`). Refresh and Try again
+   use the same loads.
 
-To add a page: the agentkit half first (its module, a `Page` variant and
-its arm in `PageIsland`; agentkit's `ui` docs, "Adding a page"), released;
-then here, an arm in `island_dom` providing its `Reload` (and an endpoint
-in `src/api.rs` for it), its address in `mount::fresh_page` for the dev
-build, and its states in `src/test_pages.rs`, which the host tests render
-on both sides; then agora-server renders it at its URL.
+To add a page: the agentkit half first (its module, a `Page` variant, its
+`ClientPage` arm and route component; agentkit's `ui` docs, "Adding a
+page"), released; then here, its `Fetch` method in `site::ApiFetch` (and an
+endpoint in `src/api.rs` for it), its arm in `mount::fresh_page` for the
+dev build, and its states in `src/test_pages.rs`, which the host tests
+render on both sides; then agora-server renders it at its URL.
 
 ### How to test it
 
 - Here, on the host: `cargo test`. `src/main.rs`: the `VirtualDom` the
-  client launches (`island_dom`, root and contexts) first renders exactly
-  the server's markup for the same page, for every page kind and state the
-  server draws (`src/test_pages.rs`: feeds, a community's, threads with
+  client launches (`site::dom`, root and contexts, under the history the
+  server renders with) first renders exactly the server's markup
+  (`route::ssr::render`) for the same page, for every page kind and state
+  the server draws (`src/test_pages.rs`: feeds, a community's, threads with
   markdown bodies, nested and deleted comments and a stub, a locked and a
-  removed thread, failures); after mount only the session line is added.
+  removed thread, comment pages, failures); after mount only the session
+  line is added; a page without its data loads it, and a failed load says
+  so in the public words.
   `src/mount.rs`: the server's block, hostile title included, hydrates
   into that same markup; a missing, unreadable or other-version block
-  stays; the guard reloads at most once, alternating versions included.
+  stays; the guard reloads at most once, alternating versions included;
+  the router starts only under its own base.
 - In a browser: agora's `just browser-test` (`tests/browser_island.rs`
   there) builds this client and a server that pre-renders, and checks in
   Chromium that the posts are in the HTML before any wasm runs, that the

@@ -7,7 +7,7 @@
 //! README, "Server rendering and hydration").
 //!
 //! **Provided at the root, fetched once per page.** [`provide`] puts one
-//! [`SessionHandle`] in the island's root context (`crate::island_dom`),
+//! [`SessionHandle`] in the island's root context (`crate::site::dom`),
 //! so every component in the island reads the same one with
 //! [`use_session`], wherever it is drawn: a slot's line, a compose form.
 //! The first reader to mount starts the bootstrap
@@ -874,7 +874,7 @@ mod tests {
         );
     }
 
-    /// A root with the session provided as `crate::island_dom` provides it,
+    /// A root with the session provided as `crate::site::dom` provides it,
     /// and two readers in different places
     fn two_readers() -> VirtualDom {
         #[component]

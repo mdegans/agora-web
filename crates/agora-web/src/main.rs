@@ -140,6 +140,8 @@ fn island_dom(page: Page) -> VirtualDom {
     let reload = match &page {
         Page::Feed(feed) => Reloads::Feed(reload_feed(feed.input.clone())),
         Page::Thread(thread) => Reloads::Thread(reload_thread(thread.post)),
+        // SPIKE: the island path has no comment reload; the router's does
+        Page::Comment(_) => Reloads::None,
     };
     #[cfg(not(feature = "dx"))]
     let dom = VirtualDom::new_with_props(PageIsland, page);
@@ -148,6 +150,7 @@ fn island_dom(page: Page) -> VirtualDom {
     let dom = match reload {
         Reloads::Feed(reload) => dom.with_root_context(reload),
         Reloads::Thread(reload) => dom.with_root_context(reload),
+        Reloads::None => dom,
     }
     .with_root_context(ClientSlots::new().with(ClientSlot::Session, session_line));
     session::provide(&dom);
@@ -158,6 +161,7 @@ fn island_dom(page: Page) -> VirtualDom {
 enum Reloads {
     Feed(Reload<FeedPage>),
     Thread(Reload<ThreadLoad>),
+    None,
 }
 
 /// This client's version

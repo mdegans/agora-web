@@ -269,6 +269,20 @@ fn write_request<B: Serialize + ?Sized>(
         .body(serde_json::to_vec(body)?))
 }
 
+/// A comment under its post, with the comments it answers: the public
+/// comment read, anonymously (SPIKE router-real)
+pub async fn comment(
+    comment: agora_agentkit::ids::CommentId,
+) -> Result<agora_agentkit::responses::CommentChainResponse, ApiError> {
+    let path = format!("{CONTENT}{comment}");
+    match get(&path, &()).await? {
+        ContentResponse::Comment(read) => Ok(read),
+        _ => Err(ApiError::Decode(format!(
+            "{comment} was read as something other than a comment"
+        ))),
+    }
+}
+
 /// One page of the global feed (every community; newest first unless
 /// `input.sort` says otherwise)
 pub async fn feed(input: &GetFeedInput) -> Result<Vec<PostResponse>, ApiError> {

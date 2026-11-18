@@ -20,11 +20,12 @@ use std::{
 
 use agora_agentkit::{
     fixtures,
-    ids::PostId,
+    ids::{CommentId, PostId},
     names::CommunityName,
     requests::GetFeedInput,
-    responses::{ContentResponse, PostResponse, PostWithCommentsResponse},
+    responses::{CommentChainResponse, ContentResponse, PostResponse, PostWithCommentsResponse},
     ui::{
+        comment::CommentPage,
         feed::FeedPage,
         island::Anonymous as _,
         page::Page,
@@ -89,11 +90,53 @@ fn feed(input: &GetFeedInput) -> Vec<PostResponse> {
     posts.into_iter().skip(offset).take(limit).collect()
 }
 
+/// The stubbed comment on post 2's thread: listed last, far down
+const STUB: &str = "5b1ce000-0000-4000-8000-0000000000ff";
+
 fn thread(id: PostId) -> Option<PostWithCommentsResponse> {
     let post = posts().into_iter().find(|p| p.id == id)?;
     let mut read = fixtures::post_with_comments();
     read.post = post;
+    // Post 2: twenty long comments, then a stub
+    if read.post.title == "Fixture post 2" {
+        read.comments = (1..=20u128)
+            .map(|i| {
+                let mut c = fixtures::comment();
+                c.id = format!("5b1ce000-0000-4000-8000-0000000001{i:02x}").parse().unwrap();
+                c.post_id = read.post.id;
+                c.body = format!("Comment {i}.\n\n{}", "A line of a long comment.\n\n".repeat(12));
+                c
+            })
+            .collect();
+        let mut stub = fixtures::comment_stub();
+        stub.id = STUB.parse().unwrap();
+        stub.created_at = Some(fixtures::at() + chrono_hour());
+        read.comment_stubs = vec![stub];
+    }
     Some(read)
+}
+
+fn chrono_hour() -> std::time::Duration {
+    std::time::Duration::from_secs(3600)
+}
+
+/// The stubbed comment's read: under post 2, answering it
+fn chain(id: CommentId) -> Option<CommentChainResponse> {
+    if id.to_string() != STUB {
+        return None;
+    }
+    let post = posts().into_iter().nth(1)?;
+    let mut comment = fixtures::comment();
+    comment.id = id;
+    comment.post_id = post.id;
+    comment.body = "The whole of the stubbed comment.".into();
+    Some(CommentChainResponse {
+        post_id: post.id,
+        post_title: Some(post.title.clone()),
+        root: Some(post),
+        chain: vec![comment],
+        ..fixtures::comment_chain()
+    })
 }
 
 /// The page the server reads for a route (the data block's); `None` for
@@ -104,6 +147,7 @@ fn read(page: &ClientPage) -> Option<Page> {
             Some(FeedPage::new(input.clone(), feed(input).into_iter().collect()).into())
         }
         ClientPage::Thread(id) => Some(ThreadPage::loaded(thread(*id)?).into()),
+        ClientPage::Comment(id) => Some(CommentPage::loaded(*id, chain(*id)?).into()),
     }
 }
 
@@ -182,6 +226,9 @@ async fn api_content(State(app): State<App>, Path(id): Path<String>) -> Response
     if id == "5b1ce000-0000-4000-8000-000000000005" {
         return (StatusCode::NOT_FOUND, Json(serde_json::json!({"error": "no such post"})))
             .into_response();
+    }
+    if let Some(read) = id.parse::<CommentId>().ok().and_then(chain) {
+        return Json(ContentResponse::Comment(read)).into_response();
     }
     match id.parse::<PostId>().ok().and_then(thread) {
         Some(read) => Json(ContentResponse::Post(read)).into_response(),

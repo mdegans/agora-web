@@ -13,7 +13,7 @@
 use std::rc::Rc;
 
 use agora_agentkit::{
-    ids::PostId,
+    ids::{CommentId, PostId},
     requests::GetFeedInput,
     ui::{
         ClientSlot, ClientSlots, DocumentTitle,
@@ -21,6 +21,7 @@ use agora_agentkit::{
         island::{self, DATA_ID, ROOT_ID},
         page::Page,
         route::{self, Fetch, PageData, SiteRoot},
+        comment::CommentLoad,
         thread::ThreadLoad,
     },
 };
@@ -47,6 +48,17 @@ impl Fetch for ApiFetch {
             // SPIKE: no community header (the stand-in server has no
             // community read); the real client reads it with the feed
             FeedPage::new(input, feed)
+        })
+    }
+
+    fn comment(&self, comment: CommentId) -> LocalBoxFuture<'static, CommentLoad> {
+        Box::pin(async move {
+            web_sys::console::log_1(&format!("agora-web: fetching comment {comment}").into());
+            match crate::api::comment(comment).await {
+                Ok(read) => CommentLoad::Loaded(Box::new(read)),
+                Err(e) if not_found(&e) => CommentLoad::NotFound,
+                Err(e) => CommentLoad::Failed(e.to_string()),
+            }
         })
     }
 

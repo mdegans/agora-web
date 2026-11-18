@@ -246,6 +246,57 @@ def main():
         expect(b.js("return location.pathname + location.search") == f"{BASE}/feed?limit=1", "its URL",
                b.js("return location.pathname + location.search"))
 
+        print("12. a stub's 'Read the whole comment': the comment's page, client-side, one read")
+        STUB = "5b1ce000-0000-4000-8000-0000000000ff"
+        ANY = "return !!document.querySelector('#agora-app a[data-dioxus-id]');"
+        b.go(f"{ORIGIN}{BASE}/post/{POST.format(2)}")
+        wait(b, ANY, "hydrated")
+        b.js("window.__marker = 'same document';")
+        reads = api_reads()
+        stub = f"#agora-app a[href='{BASE}/comment/{STUB}']"
+        expect(b.js(f"return document.querySelector(\"{stub}\").hasAttribute('data-dioxus-id')"),
+               "the stub's link is the router's")
+        b.js(f"document.querySelector(\"{stub}\").click()")
+        wait(b, text_has("The whole of the stubbed comment."), "the comment's page")
+        expect(b.js("return location.pathname") == f"{BASE}/comment/{STUB}", "its URL")
+        expect(b.js("return window.__marker") == "same document", "no page load")
+        expect(api_reads() == reads + 1, "one read", api_reads() - reads)
+        print("     title:", b.js("return document.title"))
+
+        print("13. 'See it in its thread': client-side to the thread, at the comment")
+        reads = api_reads()
+        b.js("Array.from(document.querySelectorAll('#agora-app a')).find(a => a.textContent.indexOf('See it in its thread') >= 0).click()")
+        wait(b, f"return !!document.getElementById('comment-{STUB}')", "the thread with the comment's row")
+        time.sleep(0.5)
+        got = b.js(f"return {{url: location.pathname + location.hash, y: Math.round(scrollY),"
+                   f" top: Math.round(document.getElementById('comment-{STUB}').getBoundingClientRect().top)}}")
+        print("    ", got)
+        expect(got["url"] == f"{BASE}/post/{POST.format(2)}#comment-{STUB}", "the fragment in the address")
+        expect(got["y"] > 500 and abs(got["top"]) < 5, "scrolled to the comment's row", got)
+        expect(b.js("return window.__marker") == "same document", "no page load")
+        expect(api_reads() == reads + 1, "one read", api_reads() - reads)
+        expect(b.js("return history.length") >= 3, "entries", b.js("return history.length"))
+
+        print("14. back: the comment's page; back again: the thread")
+        b.js("history.back()")
+        wait(b, text_has("The whole of the stubbed comment."), "the comment's page again")
+        expect(b.js("return location.pathname") == f"{BASE}/comment/{STUB}", "its URL")
+        b.js("history.back()")
+        wait(b, f"return location.pathname === '{BASE}/post/{POST.format(2)}' && location.hash === ''"
+                f" && !!document.getElementById('comment-{STUB}')", "the thread again")
+        expect(b.js("return window.__marker") == "same document", "no page load")
+
+        print("15. the comment's page, loaded: server HTML, hydrated, no read")
+        reads = api_reads()
+        b.go(f"{ORIGIN}{BASE}/comment/{STUB}")
+        wait(b, "return !!window.__ssr", "parsed")
+        expect("The whole of the stubbed comment." in b.js("return window.__ssr.text"), "in the server's HTML")
+        wait(b, ANY, "hydrated")
+        expect(b.js(SAME)["same"], "server elements kept")
+        expect(api_reads() == reads, "no read")
+        skip = b.js("var a = document.querySelector('#agora-app a.ui-skip'); return a && a.getAttribute('href')")
+        print("     skip link:", skip)
+
         print("browser console (warnings and errors):")
         for entry in b.logs():
             if entry.get("level") in ("WARNING", "SEVERE"):

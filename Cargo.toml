@@ -45,3 +45,10 @@ panic = "abort"
 [profile.wasm-dev]
 inherits = "dev"
 debug = false
+
+# DRAFT ONLY, never merge: the unreleased agentkit branch (agentkit#342,
+# `portal/inbox`) agora's portal inbox builds against; the server's lock check
+# needs this workspace locked to the same agentkit. Before merge agentkit is
+# released and this section goes.
+[patch.crates-io]
+agora-agentkit = { git = "https://github.com/mdegans/agora-agentkit", rev = "b570049fb309af3cb3d13440c0eba0e97b633a9a" }

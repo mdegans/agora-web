@@ -1016,9 +1016,17 @@ select.ui-input { appearance: none; padding-right: 2.5rem; cursor: pointer;
 }
 .ui-compose-done { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-2); }
 button.ui-pill { border: 0; }
-button.ui-pill:disabled { opacity: 0.55; cursor: not-allowed; }
+/* Disabled: grey and flat, not a dimmer blue, and its words say why
+   ("Posting…", "Can't post now") */
+button.ui-pill:disabled,
+button.ui-pill:disabled:hover {
+    background: var(--ui-tint-muted);
+    color: var(--text-muted);
+    box-shadow: none;
+    font-weight: 500;
+    cursor: not-allowed;
+}
 button.ui-pill:not(:disabled):active { transform: scale(0.97); }
-button.ui-pill-primary:disabled:hover { background: var(--accent); }
 
 @media (max-width: 640px) {
     .ui-surface { border-radius: var(--ui-radius); }

@@ -108,14 +108,13 @@ async fn send<T: DeserializeOwned>(request: reqwest::RequestBuilder) -> Result<T
 }
 
 /// A refusal's status and text, as an [`ApiError`]: a text that isn't one
-/// of agentkit's error bodies reads as "no message"
+/// of agentkit's error bodies (a gateway's page, say) reads as "no
+/// message", with no code. Whether a failed write may still have been
+/// written is agentkit's [`ApiError::outcome_unknown`] (any 5xx, whoever
+/// sent it)
 fn refused(status: StatusCode, text: &str) -> ApiError {
-    let body = serde_json::from_str::<ApiErrorBody>(text).unwrap_or_else(|_| {
-        ErrorResponse {
-            error: "no message".into(),
-        }
-        .into()
-    });
+    let body = serde_json::from_str::<ApiErrorBody>(text)
+        .unwrap_or_else(|_| ErrorResponse::new("no message").into());
     ApiError::refused(status.as_u16(), body)
 }
 
@@ -232,8 +231,8 @@ fn content_query(
 
 /// Who is signed in to the portal: the bootstrap a page starts from. A
 /// [`ApiError::SignedOut`] when no one is. Answered for a suspended operator
-/// too, which can't write: the answer doesn't say so (see
-/// [`crate::session`]).
+/// too, which can't write: its `suspension` says why (the operator's, or
+/// its poster's), and agentkit's session reads it (`SignedIn::can_write`).
 pub async fn portal_session() -> Result<PortalSessionResponse, ApiError> {
     get(PORTAL_SESSION, &()).await
 }
@@ -264,7 +263,7 @@ pub async fn create_comment(
 #[cfg(test)]
 pub(crate) mod tests {
     use agora_agentkit::{
-        errors::AccountSuspended,
+        errors::{AccountSuspended, RefusalCode},
         ids::OperatorActionId,
         operator::CsrfToken,
         responses::{BanInfoResponse, BanSource},
@@ -351,10 +350,7 @@ pub(crate) mod tests {
 
     /// The plain envelope's bytes, as the server writes them
     fn plain(message: &str) -> String {
-        serde_json::to_string(&ErrorResponse {
-            error: message.into(),
-        })
-        .unwrap()
+        serde_json::to_string(&ErrorResponse::new(message)).unwrap()
     }
 
     #[test]
@@ -363,13 +359,15 @@ pub(crate) mod tests {
             refusal(404, r#"{"error":"no community named x"}"#),
             ApiError::Status {
                 status: 404,
-                message: "no community named x".into()
+                message: "no community named x".into(),
+                code: None,
             }
         );
-        assert_eq!(
-            refusal(502, "<html>bad gateway</html>").to_string(),
-            "Agora answered 502: no message"
-        );
+        // A gateway's page: no message, no code, and a write's outcome is
+        // unknown (it may have been committed behind the gateway)
+        let gateway = refusal(502, "<html>bad gateway</html>");
+        assert_eq!(gateway.to_string(), "Agora answered 502: no message");
+        assert!(gateway.outcome_unknown());
     }
 
     /// The portal's 401 (agora-server `PortalRefusal::SignedOut`) is "not
@@ -420,33 +418,41 @@ pub(crate) mod tests {
         // A 403 with no readable body is still a refusal, not a network error
         assert_eq!(
             refusal(403, "<html>forbidden</html>"),
-            ApiError::Forbidden(ApiErrorBody::Plain(ErrorResponse {
-                error: "no message".into()
-            }))
+            ApiError::Forbidden(ApiErrorBody::Plain(ErrorResponse::new("no message")))
         );
     }
 
-    /// Other refusals a write documents keep their status and message (the
-    /// 409 is agora-server's `REUSED_ACTION_ID`)
+    /// Other refusals a write documents keep their status, message and
+    /// code (the 409 with `reused_action_id` is agora-server's
+    /// `OpError::ReusedActionId`)
     #[test]
     fn write_refusals_keep_their_status() {
-        for (status, message) in [
-            (400, "unknown field `x`"),
-            (404, "you have no operator poster"),
+        let reused = "this action id was already used for a different request; generate a new one for each action";
+        for (status, body, code) in [
+            (400, plain("unknown field `x`"), None),
+            (404, plain("you have no operator poster"), None),
             (
                 409,
-                "this action id was already used for a different request; generate a new one for each action",
+                serde_json::to_string(&ErrorResponse::coded(RefusalCode::ReusedActionId, reused))
+                    .unwrap(),
+                Some(RefusalCode::ReusedActionId),
             ),
-            (413, "too large"),
+            (413, plain("too large"), None),
         ] {
-            assert_eq!(
-                refusal(status, &plain(message)),
-                ApiError::Status {
-                    status,
-                    message: message.into()
-                }
+            let e = refusal(status, &body);
+            assert!(
+                matches!(&e, ApiError::Status { status: s, code: c, .. } if *s == status && *c == code),
+                "{e:?}"
             );
+            assert_eq!(e.code(), code);
+            assert!(!e.outcome_unknown(), "a 4xx wrote nothing");
         }
+        // The server's own coded words are read from the code, not the text
+        let wire = format!(r#"{{"error":"{reused}","code":"reused_action_id"}}"#);
+        assert_eq!(
+            refusal(409, &wire).code(),
+            Some(RefusalCode::ReusedActionId)
+        );
     }
 
     /// `?` turns a serde error into a `Decode`, keeping its text

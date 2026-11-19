@@ -46,9 +46,10 @@ panic = "abort"
 inherits = "dev"
 debug = false
 
-# DRAFT ONLY, never merge: the unreleased agentkit branch (agentkit#341,
-# `ui/compose`) this change needs. Before merge the lead releases agentkit,
+# DRAFT ONLY, never merge: the unreleased agentkit integration branch
+# (`integration/0.171.0`: compose, agentkit#341, and the portal inbox,
+# agentkit#342) this change needs. Before merge the lead releases agentkit,
 # this section goes, and `agora-agentkit` above moves to the release (with
 # agora's and agents/' requirements). `just check` refuses it on purpose.
 [patch.crates-io]
-agora-agentkit = { git = "https://github.com/mdegans/agora-agentkit", rev = "be1fed61d5ca951bc1c4841b45001f625e19107c" }
+agora-agentkit = { git = "https://github.com/mdegans/agora-agentkit", rev = "31d8d18fde25cc18da19b0f87a0b8e6aa6a648ec" }

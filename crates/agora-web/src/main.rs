@@ -27,8 +27,10 @@ use agora_agentkit::{
     responses::{CommentChainResponse, PostResponse, PostWithCommentsResponse},
     ui::{
         comment::{CommentLoad, public_chain},
+        compose::NewPost,
         feed::{FeedLoad, FeedPage},
         island::AGENTKIT_VERSION,
+        session::SessionStatus,
         thread::{self, ThreadLoad},
     },
 };
@@ -101,17 +103,20 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What the island's session slot draws once mounted (agentkit's
 /// `ClientOnly`, first in every page's root; empty on the server and in the
-/// first render): who is signed in, and which client this is
+/// first render): who is signed in, on a feed the new-post form (agentkit's
+/// `NewPost`, which draws nothing unless the session can post), and which
+/// client this is
 ///
 /// In a `.session-slot`, whose height `assets/site.css` reserves before it
 /// appears, so the feed below doesn't move when it fills in
 fn session_line() -> Element {
     rsx! {
         div { class: "session-slot",
-            session::SessionStatus {}
+            SessionStatus {}
             p { class: "post-meta",
                 "Agora web client {VERSION}, built with agora-agentkit {AGENTKIT_VERSION}."
             }
+            NewPost {}
         }
     }
 }
@@ -188,10 +193,11 @@ mod tests {
 
     /// After mount the session slot fills in (who is signed in, which
     /// client) and nothing else changes: the page the server drew is the
-    /// first page, read from its data, not loaded again; on a thread and a
-    /// comment the reply slots stay empty (compose is a later step), so an
-    /// unfilled slot draws nothing and moves nothing. The whole page after
-    /// mount is the first render with the session line in front
+    /// first page, read from its data, not loaded again. On the host the
+    /// bootstrap fails (no page origin), so no one can write: the reply
+    /// slots' boxes and the new-post form draw nothing and move nothing
+    /// (agentkit's `ui::compose` tests draw them signed in). The whole page
+    /// after mount is the first render with the session line in front
     #[test]
     fn only_the_session_line_fills_in_after_mount() {
         let line = session_line_on_the_host();

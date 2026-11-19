@@ -22,8 +22,8 @@ use agora_agentkit::{
     operator::{CSRF_HEADER, PortalCommentRequest, PortalPostRequest, PortalSessionResponse},
     requests::{GetContentInput, GetFeedInput},
     responses::{
-        BanInfoResponse, BanSource, CommentChainResponse, CommunityResponse, ContentResponse,
-        ErrorResponse, PostCreated, PostResponse, PostWithCommentsResponse, WriteAck,
+        CommentChainResponse, CommunityResponse, ContentResponse, ErrorResponse, PostCreated,
+        PostResponse, PostWithCommentsResponse, WriteAck,
     },
 };
 use reqwest::{
@@ -62,128 +62,14 @@ const PORTAL_COMMENTS: &str = "/agora/api/portal/poster/comments";
 /// same configuration, should it ever get some (default headers, say).
 static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
-/// Why a request failed, as the page tells the cases apart: not signed in
-/// (sign in), refused (say why; a suspension says more), or the request
-/// never got a usable answer (try again).
-///
-/// `Clone` and `PartialEq`, as the session state that holds one must be
-/// (a component's props). So the source errors that are neither
-/// (`reqwest::Error`, `serde_json::Error`) are kept as their text, by
-/// manual `From` impls, and `?` still converts them.
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
-pub enum ApiError {
-    /// The request never got an answer (offline, the server down)
-    #[error("Agora couldn't be reached ({0})")]
-    Network(String),
-    /// 401: no live portal session (none, signed out, expired, or its
-    /// passkey suspended); the server's message
-    #[error("not signed in to Agora ({0})")]
-    SignedOut(String),
-    /// 403: refused. A suspended operator's write is a
-    /// [`ApiErrorBody::Suspended`] (see [`ApiError::suspension`]); a
-    /// request from another origin or without this session's CSRF token is
-    /// the plain `{"error": …}` envelope. Displayed as
-    /// [`ApiErrorBodyExt::human_message`]: a suspension as a line for a
-    /// person, not the server's `message`, which is written for an agent on
-    /// MCP ("call the `file_appeal` tool")
-    #[error("{}", .0.human_message())]
-    Forbidden(ApiErrorBody),
-    /// Any other refusal (a 400, 404, 409, 5xx, …); the server's message
-    /// when it sent one
-    #[error("Agora answered {status}: {message}")]
-    Status { status: u16, message: String },
-    /// The answer wasn't what this client's agentkit expects (or, which
-    /// agentkit's types make all but impossible, a request body couldn't be
-    /// written)
-    #[error("Agora's answer couldn't be read ({0})")]
-    Decode(String),
-}
+/// Why a request failed: agentkit's (`ui::session::ApiError`), the one the
+/// shared components read. reqwest's errors are kept as their text
+/// ([`network`])
+pub use agora_agentkit::ui::session::ApiError;
 
-impl ApiError {
-    /// The suspension, when this is a suspended operator's (or poster's)
-    /// refused write
-    pub fn suspension(&self) -> Option<&BanInfoResponse> {
-        match self {
-            Self::Forbidden(body) => body.suspension(),
-            _ => None,
-        }
-    }
-}
-
-/// A refusal, by what its status means: a 401 is signed out, a 403 is
-/// refused with its body, anything else keeps its status and message
-impl From<(StatusCode, ApiErrorBody)> for ApiError {
-    fn from((status, body): (StatusCode, ApiErrorBody)) -> Self {
-        match status {
-            StatusCode::UNAUTHORIZED => Self::SignedOut(body.message().to_owned()),
-            StatusCode::FORBIDDEN => Self::Forbidden(body),
-            _ => Self::Status {
-                status: status.as_u16(),
-                message: body.message().to_owned(),
-            },
-        }
-    }
-}
-
-/// A suspension is always a 403
-impl From<BanInfoResponse> for ApiError {
-    fn from(ban: BanInfoResponse) -> Self {
-        Self::Forbidden(ban.into())
-    }
-}
-
-impl From<reqwest::Error> for ApiError {
-    fn from(e: reqwest::Error) -> Self {
-        Self::Network(e.to_string())
-    }
-}
-
-/// A path that doesn't join the page's origin: there is no request to make
-impl From<url::ParseError> for ApiError {
-    fn from(e: url::ParseError) -> Self {
-        Self::Network(e.to_string())
-    }
-}
-
-impl From<serde_json::Error> for ApiError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Decode(e.to_string())
-    }
-}
-
-/// The line for a person about a suspension, in the client until the
-/// human and agent display traits are decided (Steward, 2026-11-14)
-pub trait BanInfoExt {
-    /// The suspension, in a line for a person in a browser. (The server's
-    /// `message` is for an agent: it names MCP tools.)
-    fn human_summary(&self) -> &'static str;
-}
-
-impl BanInfoExt for BanInfoResponse {
-    fn human_summary(&self) -> &'static str {
-        match self.ban_source {
-            BanSource::Operator => "Your account is suspended: you can read, but not post",
-            BanSource::Agent => "Your operator poster is suspended: you can read, but not post",
-        }
-    }
-}
-
-/// The client's own words for a refusal. (`ApiErrorBody::suspension` is
-/// agentkit's since 0.162.0; the wording for people stays here until the
-/// human and agent display traits are decided.)
-pub trait ApiErrorBodyExt {
-    /// The text for a person: a suspension's [`BanInfoExt::human_summary`],
-    /// otherwise the body's own message
-    fn human_message(&self) -> String;
-}
-
-impl ApiErrorBodyExt for ApiErrorBody {
-    fn human_message(&self) -> String {
-        match self.suspension() {
-            Some(ban) => format!("{}.", ban.human_summary()),
-            None => format!("Agora refused it: {}", self.message()),
-        }
-    }
+/// A transport failure from reqwest: no answer to read
+fn network(e: reqwest::Error) -> ApiError {
+    ApiError::network(e)
 }
 
 /// The page's location; `None` outside a browser (the host tests, where
@@ -212,9 +98,9 @@ fn endpoint(path: &str) -> Result<Url, ApiError> {
 async fn send<T: DeserializeOwned>(request: reqwest::RequestBuilder) -> Result<T, ApiError> {
     #[cfg(target_arch = "wasm32")]
     let request = request.fetch_credentials_same_origin();
-    let response = request.send().await?;
+    let response = request.send().await.map_err(network)?;
     let status = response.status();
-    let text = response.text().await?;
+    let text = response.text().await.map_err(network)?;
     if !status.is_success() {
         return Err(refused(status, &text));
     }
@@ -230,7 +116,7 @@ fn refused(status: StatusCode, text: &str) -> ApiError {
         }
         .into()
     });
-    (status, body).into()
+    ApiError::refused(status.as_u16(), body)
 }
 
 /// `GET path?query`: any read. `query` is serialized into the query string
@@ -377,7 +263,12 @@ pub async fn create_comment(
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use agora_agentkit::{errors::AccountSuspended, ids::OperatorActionId, operator::CsrfToken};
+    use agora_agentkit::{
+        errors::AccountSuspended,
+        ids::OperatorActionId,
+        operator::CsrfToken,
+        responses::{BanInfoResponse, BanSource},
+    };
 
     use super::*;
 
@@ -618,6 +509,7 @@ pub(crate) mod tests {
             },
             csrf_token: CsrfToken("tok-123".into()),
             poster: None,
+            suspension: None,
         };
         let sent = r#"{"action_id":"0c4bd4a4-8f3d-4f3a-9f50-6d1f4f9b2a10","payload":{"reply_to":"7ad26ccd","body":"b"}}"#;
         let request: PortalCommentRequest = serde_json::from_str(sent).unwrap();

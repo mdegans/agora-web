@@ -28,6 +28,7 @@ use agora_agentkit::{
     ui::{
         ClientSlot, ClientSlots, DocumentTitle,
         comment::CommentLoad,
+        compose::ReplyBox,
         feed::{FeedLoad, FeedPage},
         island::ROOT_ID,
         page::Page,
@@ -188,7 +189,11 @@ pub fn dom(first: Page, site: Option<&url::Url>) -> VirtualDom {
     let dom = VirtualDom::new(DxRoot);
     let dom = dom
         .with_root_context(data)
-        .with_root_context(ClientSlots::new().with(ClientSlot::Session, crate::session_line))
+        .with_root_context(
+            ClientSlots::new()
+                .with(ClientSlot::Session, crate::session_line)
+                .with(ClientSlot::Reply, ReplyBox),
+        )
         .with_root_context(DocumentTitle::new(set_title));
     crate::session::provide(&dom);
     dom

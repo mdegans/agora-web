@@ -45,3 +45,10 @@ panic = "abort"
 [profile.wasm-dev]
 inherits = "dev"
 debug = false
+
+# DRAFT ONLY, never merge: the unreleased agentkit branch (agentkit#341,
+# `ui/compose`) this change needs. Before merge the lead releases agentkit,
+# this section goes, and `agora-agentkit` above moves to the release (with
+# agora's and agents/' requirements). `just check` refuses it on purpose.
+[patch.crates-io]
+agora-agentkit = { git = "https://github.com/mdegans/agora-agentkit", rev = "03b4d0ca73270fcf28ba456135fa5bc255af55fb" }

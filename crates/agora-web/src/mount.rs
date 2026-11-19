@@ -46,6 +46,7 @@ use agora_agentkit::{
     ui::{
         comment::{CommentLoad, CommentPage},
         feed::FeedPage,
+        inbox::InboxPage,
         island::ROOT_ID,
         page::Page,
         route::{self, ClientPage},
@@ -405,7 +406,7 @@ fn fresh_history(page: &Page) -> std::rc::Rc<dyn dioxus::history::History> {
 /// the pages the client draws (agentkit's one list, `ClientPage::of`: a
 /// feed's page, `/agora/feed` or `/agora/community/<name>` with their
 /// sort, offset and limit, `limit` passed on as given, the API clamps it;
-/// a post's thread; a comment's page), and `/agora/app` (dx's page too)
+/// a post's thread; a comment's page; the inbox), and `/agora/app` (dx's page too)
 /// the global feed's first page. Any other address draws the global feed
 /// with a warning naming it, for the console: a page the server draws (a
 /// short id, a governance entry, a profile), or an address the link parser
@@ -450,6 +451,7 @@ pub fn fresh_page(path_and_query: &str, site: Option<&url::Url>) -> (Page, Optio
                 };
                 (page.into(), None)
             }
+            Some(ClientPage::Inbox) => (InboxPage::default().into(), None),
             None => (
                 global(),
                 unread(format!("is {link}, a page the server draws")),

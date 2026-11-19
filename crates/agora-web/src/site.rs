@@ -17,8 +17,9 @@
 //!   CSP blocks dioxus's own `document::Title`).
 //!
 //! Which pages the client draws is agentkit's one list
-//! (`route::ClientPage::of`): the feeds, a post's thread and a comment's
-//! page. Every other link is a plain `<a>`, a full page load.
+//! (`route::ClientPage::of`): the feeds, a post's thread, a comment's
+//! page and the operator poster's inbox. Every other link is a plain
+//! `<a>`, a full page load.
 
 use std::rc::Rc;
 
@@ -28,7 +29,9 @@ use agora_agentkit::{
     ui::{
         ClientSlot, ClientSlots, DocumentTitle,
         comment::CommentLoad,
+        compose::ReplyBox,
         feed::{FeedLoad, FeedPage},
+        inbox::Inbox,
         island::ROOT_ID,
         page::Page,
         route::{Fetch, PageData, SiteRoot},
@@ -188,7 +191,12 @@ pub fn dom(first: Page, site: Option<&url::Url>) -> VirtualDom {
     let dom = VirtualDom::new(DxRoot);
     let dom = dom
         .with_root_context(data)
-        .with_root_context(ClientSlots::new().with(ClientSlot::Session, crate::session_line))
+        .with_root_context(
+            ClientSlots::new()
+                .with(ClientSlot::Session, crate::session_line)
+                .with(ClientSlot::Reply, ReplyBox)
+                .with(ClientSlot::Inbox, Inbox),
+        )
         .with_root_context(DocumentTitle::new(set_title));
     crate::session::provide(&dom);
     dom

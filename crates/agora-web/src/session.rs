@@ -1,1051 +1,254 @@
-//! Who is signed in: the portal session, as the UI reads it.
+//! Who is signed in: agentkit's session (`ui::session`), over this
+//! client's [`api`].
 //!
-//! **Drawn in a client-only slot.** Who is signed in is client-only
-//! state: the server can't draw it, so it is drawn in agentkit's
-//! `ClientOnly` slot, empty on the server and in the first client render
-//! and filled after mount ([`SessionStatus`], from `crate::session_line`;
-//! README, "Server rendering and hydration").
-//!
-//! **Provided at the root, fetched once per page.** [`provide`] puts one
-//! [`SessionHandle`] in the island's root context (`crate::site::dom`),
-//! so every component in the island reads the same one with
-//! [`use_session`], wherever it is drawn: a slot's line, a compose form.
-//! The first reader to mount starts the bootstrap
-//! (`GET /agora/api/portal/session`) in an effect, after the first render:
-//! never while rendering, so the first render is the same with or without a
-//! fetch (what hydration needs), and a page that draws no reader fetches
-//! nothing. It is fetched again only when asked
-//! ([`SessionHandle::refresh`], the "Try again" after a failure), or when a
-//! write's refusal says the session may have changed. Should a page ever
-//! host two islands, each root fetches its own.
-//!
-//! **A refresh never takes a signed-in page away for a hiccup.** Only a 200
-//! or a 401 replaces a [`Session::SignedIn`]; a refresh that fails otherwise
-//! (offline, a 5xx) leaves it as it was ([`Session::after_refresh`]).
-//!
-//! **Writes go through the handle** ([`SessionHandle::create_post`],
-//! [`SessionHandle::create_comment`]): they take the CSRF token from the
-//! [`SignedIn`] value the component drew, and a refusal updates the state
-//! when it was this session's ([`Session::after_write_error`]): a 401 signs
-//! the page out, a suspension is recorded and [`SignedIn::can_write`] turns
-//! false; any other 403 (a stale CSRF token, say after signing in again in
-//! another tab) and a 404 (the server's answer for "no operator poster" as
-//! well as for an unknown community or `reply_to`) fetch the bootstrap
-//! again.
-//!
-//! **For a compose form (step 4c):** a 401 turns the state into
-//! [`Session::SignedOut`], so a form drawn only `if let Session::SignedIn`
-//! unmounts, and its draft with it. If a draft is to survive signing in
-//! again, keep it outside that conditional: in a signal owned by an
-//! ancestor that is always mounted. And spawn the write itself where it
-//! outlives the form (`dioxus::core::spawn_forever`, which runs on the root
-//! scope): reqwest's wasm client aborts the `fetch` when its future is
-//! dropped, and a task spawned by a component is dropped when the component
-//! unmounts, so a form that closes mid-POST would abandon a write the
-//! server may already have committed. See the README.
-//!
-//! **What draws takes props.** [`SessionStatusView`] draws a [`Session`]
-//! and reads nothing; [`SessionStatus`] reads the context and draws it.
+//! The session's state, its refresh rules, the writes through it and what
+//! they draw are agentkit's, so the shared components (the reply box, the
+//! new-post form) read the same session as the session line
+//! (`use_session`). This client gives it [`ApiPortal`]: how the portal is
+//! reached (same-origin `fetch`, with the session's cookie) and where the
+//! page is, for the sign-in link to come back to.
 
 use agora_agentkit::{
     ids::CommentId,
-    links::AgoraLink,
     operator::{
-        AgentRef, OperatorRef, PortalCommentRequest, PortalPostRequest, PortalSessionResponse,
+        PortalCommentRequest, PortalFriendshipRequest, PortalMarkReadRequest,
+        PortalMarkReadResponse, PortalMessageRequest, PortalMessageTap, PortalPostRequest,
+        PortalSessionResponse,
     },
-    requests::GetProfileInput,
-    responses::{BanInfoResponse, PostCreated, WriteAck},
+    responses::{
+        CommunityResponse, FriendsResponse, InboxResponse, PostCreated, SendMessageResponse,
+        StatusResponse, WriteAck,
+    },
+    ui::session::{ApiError, Portal, TapFailed},
 };
-use dioxus::prelude::*;
-use url::{Position, Url};
+use dioxus::prelude::VirtualDom;
 
-use crate::api::{self, ApiError, BanInfoExt};
+use crate::api;
 
-/// The server's sign-in page (agora-server `operator::session::login_url`),
-/// which returns to `next` after signing in
-const SIGN_IN: &str = "/agora/login";
+/// `futures`' `LocalBoxFuture`, without the crate
+type LocalBoxFuture<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>>;
 
-/// The portal session, as far as this page knows.
-///
-/// `Debug` never shows the CSRF token: agentkit's `CsrfToken` prints
-/// `[REDACTED]`.
-#[derive(Debug, Clone, PartialEq)]
-pub enum Session {
-    /// The bootstrap hasn't answered yet
-    Loading,
-    /// No one is signed in (the bootstrap, or a write, was a 401). The way
-    /// back is the sign-in link, which returns to this page and so loads it
-    /// again
-    SignedOut,
-    /// An operator is signed in
-    SignedIn(SignedIn),
-    /// The bootstrap failed for another reason (offline, a 5xx, an answer
-    /// this client can't read); whether anyone is signed in is unknown.
-    /// The way back is [`SessionHandle::refresh`] (the view's "Try again")
-    Failed(ApiError),
-}
+/// The portal over [`api`]. Each call takes what it needs from its
+/// arguments before the future starts, so the future borrows nothing
+pub struct ApiPortal;
 
-/// A signed-in operator: the bootstrap, and what the page has learned
-/// since
-#[derive(Debug, Clone, PartialEq)]
-pub struct SignedIn {
-    /// The server's answer: the operator, the CSRF token, the poster
-    portal: PortalSessionResponse,
-    /// Set when a write was refused for a suspension. The bootstrap doesn't
-    /// say whether the operator may write (a suspended operator gets one
-    /// too), so until a write is refused this is `None`.
-    suspension: Option<Box<BanInfoResponse>>,
-}
+impl Portal for ApiPortal {
+    fn session(&self) -> LocalBoxFuture<'static, Result<PortalSessionResponse, ApiError>> {
+        Box::pin(api::portal_session())
+    }
 
-impl SignedIn {
-    /// From the bootstrap
-    pub fn new(portal: PortalSessionResponse) -> Self {
-        Self {
-            portal,
-            suspension: None,
+    fn create_post(
+        &self,
+        session: &PortalSessionResponse,
+        request: &PortalPostRequest,
+    ) -> LocalBoxFuture<'static, Result<PostCreated, ApiError>> {
+        let (session, request) = (session.clone(), request.clone());
+        Box::pin(async move { api::create_post(&session, &request).await })
+    }
+
+    fn create_comment(
+        &self,
+        session: &PortalSessionResponse,
+        request: &PortalCommentRequest,
+    ) -> LocalBoxFuture<'static, Result<WriteAck<CommentId>, ApiError>> {
+        let (session, request) = (session.clone(), request.clone());
+        Box::pin(async move { api::create_comment(&session, &request).await })
+    }
+
+    fn communities(&self) -> LocalBoxFuture<'static, Result<Vec<CommunityResponse>, ApiError>> {
+        Box::pin(api::communities())
+    }
+
+    fn here(&self) -> Option<String> {
+        let location = api::page_location()?;
+        let mut path = location.pathname().ok()?;
+        path.push_str(&location.search().ok()?);
+        Some(path)
+    }
+
+    /// The browser warns before the page is left or reloaded while a draft
+    /// is unsent ([`warn_before_leaving`]). A move within the site (the
+    /// router) keeps drafts, and fires no `beforeunload`
+    fn drafts_unsent(&self, unsent: bool) {
+        UNSENT.with(|u| u.set(unsent));
+        if unsent {
+            warn_before_leaving();
         }
     }
 
-    /// Who is signed in
-    pub fn operator(&self) -> &OperatorRef {
-        &self.portal.operator
+    fn inbox(&self) -> LocalBoxFuture<'static, Result<InboxResponse, ApiError>> {
+        Box::pin(api::inbox())
     }
 
-    /// The operator's own operator poster, which posts as the operator;
-    /// `None` when it has none
-    pub fn poster(&self) -> Option<&AgentRef> {
-        self.portal.poster.as_ref()
+    fn friends(&self) -> LocalBoxFuture<'static, Result<FriendsResponse, ApiError>> {
+        Box::pin(api::friends())
     }
 
-    /// Why writes are refused, once a write has been
-    pub fn suspension(&self) -> Option<&BanInfoResponse> {
-        self.suspension.as_deref()
+    fn mark_read(
+        &self,
+        session: &PortalSessionResponse,
+        request: &PortalMarkReadRequest,
+    ) -> LocalBoxFuture<'static, Result<PortalMarkReadResponse, ApiError>> {
+        let (session, request) = (session.clone(), request.clone());
+        Box::pin(async move { api::mark_read(&session, &request).await })
     }
 
-    /// Whether a post or comment can be tried: there is a poster, and no
-    /// write has been refused for a suspension. The server decides; this is
-    /// what the page knows.
-    #[allow(dead_code, reason = "for step 4c's compose form, its first caller")]
-    pub fn can_write(&self) -> bool {
-        self.poster().is_some() && self.suspension.is_none()
+    fn friendship(
+        &self,
+        session: &PortalSessionResponse,
+        request: &PortalFriendshipRequest,
+    ) -> LocalBoxFuture<'static, Result<StatusResponse, ApiError>> {
+        let (session, request) = (session.clone(), request.clone());
+        Box::pin(async move { api::friendship(&session, &request).await })
     }
 
-    /// The bootstrap, with the CSRF token, for [`api`]'s writes
-    pub fn portal(&self) -> &PortalSessionResponse {
-        &self.portal
+    fn message_tap(
+        &self,
+        session: &PortalSessionResponse,
+        request: &PortalMessageRequest,
+    ) -> LocalBoxFuture<'static, Result<PortalMessageTap, ApiError>> {
+        let (session, request) = (session.clone(), request.clone());
+        Box::pin(async move { api::message_tap(&session, &request).await })
     }
 
-    /// Whether `other` is the same session: the same operator and the same
-    /// CSRF token (one per session; compared in constant time)
-    fn is_session_of(&self, other: &SignedIn) -> bool {
-        self.portal.operator.id == other.portal.operator.id
-            && self.portal.csrf_token == other.portal.csrf_token
-    }
-}
-
-/// What a caller should do after [`Session::after_write_error`]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FollowUp {
-    /// Nothing: the state says what the refusal meant
-    Nothing,
-    /// Fetch the bootstrap again: the session may have changed under the
-    /// page
-    Refresh,
-}
-
-impl Session {
-    /// The state a bootstrap answer means: a 401 is signed out, any other
-    /// failure is [`Session::Failed`]
-    pub fn from_bootstrap(answer: Result<PortalSessionResponse, ApiError>) -> Self {
-        match answer {
-            Ok(portal) => Self::SignedIn(SignedIn::new(portal)),
-            Err(ApiError::SignedOut(_)) => Self::SignedOut,
-            Err(e) => Self::Failed(e),
-        }
+    fn send_message(
+        &self,
+        session: &PortalSessionResponse,
+        request: &PortalMessageRequest,
+    ) -> LocalBoxFuture<'static, Result<SendMessageResponse, ApiError>> {
+        let (session, request) = (session.clone(), request.clone());
+        Box::pin(async move { api::send_message(&session, &request).await })
     }
 
-    /// A refreshed bootstrap's answer, applied. A 200 or a 401 replaces the
-    /// state. Any other failure replaces it only when no one is known to be
-    /// signed in: a signed-in page (and any form drawn for it) stays while
-    /// the server is unreachable. A 200 for the same session keeps a
-    /// suspension the page has learned (the bootstrap doesn't carry one),
-    /// so a lifted suspension shows after a reload.
-    pub fn after_refresh(&mut self, answer: Result<PortalSessionResponse, ApiError>) {
-        let mut next = Self::from_bootstrap(answer);
-        match (&*self, &mut next) {
-            (Self::SignedIn(_), Self::Failed(_)) => return,
-            (Self::SignedIn(now), Self::SignedIn(new)) if now.is_session_of(new) => {
-                new.suspension = now.suspension.clone();
-            }
-            _ => {}
-        }
-        *self = next;
-    }
-
-    /// What a write's refusal says about the session. `used` is the session
-    /// the write was made with; the state is changed only if it is still
-    /// that one, since a refusal of an older session's write says nothing
-    /// about a newer one.
-    ///
-    /// - 401: signed out (or, if the session has changed since, ask again);
-    /// - 403 for a suspension: recorded;
-    /// - another 403 (Origin, a stale CSRF token): ask again;
-    /// - 404: ask again. The server answers 404 when the operator has no
-    ///   operator poster, and also for an unknown community or `reply_to`;
-    ///   one GET tells which, and corrects a "posting as" that went stale;
-    /// - anything else (a 400, 409, 5xx, a network error) is about the
-    ///   write, not the session.
-    pub fn after_write_error(&mut self, used: &SignedIn, error: &ApiError) -> FollowUp {
-        let current = matches!(self, Self::SignedIn(now) if now.is_session_of(used));
-        match error {
-            ApiError::SignedOut(_) if current => {
-                *self = Self::SignedOut;
-                FollowUp::Nothing
-            }
-            ApiError::SignedOut(_) => FollowUp::Refresh,
-            ApiError::Forbidden(_) => match error.suspension() {
-                Some(ban) => {
-                    if let Self::SignedIn(now) = self
-                        && current
-                    {
-                        now.suspension = Some(Box::new(ban.clone()));
-                    }
-                    FollowUp::Nothing
-                }
-                None => FollowUp::Refresh,
-            },
-            ApiError::Status { status: 404, .. } => FollowUp::Refresh,
-            ApiError::Network(_) | ApiError::Status { .. } | ApiError::Decode(_) => {
-                FollowUp::Nothing
-            }
-        }
+    /// The browser's prompt, opened before this returns ([`crate::passkey`])
+    fn passkey(
+        &self,
+        options: &serde_json::Value,
+    ) -> LocalBoxFuture<'static, Result<serde_json::Value, TapFailed>> {
+        crate::passkey::get(options)
     }
 }
 
-/// The session in context: read it, refresh it, write through it. `Copy`,
-/// like the signals it holds.
-///
-/// The signals are owned by the root scope, as the refresh task that
-/// writes them runs there (`spawn_forever`); owned by a scope below
-/// it, every write from the task would log dioxus's hoisting warning in a
-/// debug build.
-#[derive(Clone, Copy, PartialEq)]
-pub struct SessionHandle {
-    state: Signal<Session>,
-    /// Bumped by every refresh, so a bootstrap that answers after a later
-    /// refresh was started is dropped rather than overwriting it. Only
-    /// refreshes compete on it: a write's refusal changes the state without
-    /// it, so it can't cancel a refresh in flight.
-    generation: Signal<u64>,
+thread_local! {
+    /// Whether a draft is unsent, as agentkit last said
+    static UNSENT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
-impl SessionHandle {
-    /// A handle, its state loading, owned by the root scope
-    fn new_root() -> Self {
-        Self {
-            state: Signal::new_in_scope(Session::Loading, ScopeId::ROOT),
-            generation: Signal::new_in_scope(0, ScopeId::ROOT),
+/// Listens for `beforeunload`, once per page, and asks the browser to
+/// confirm leaving while [`UNSENT`] says a draft would be lost. Browsers
+/// show their own words, not the page's. Nothing outside a browser (the
+/// host tests)
+fn warn_before_leaving() {
+    #[cfg(target_arch = "wasm32")]
+    {
+        use web_sys::wasm_bindgen::{JsCast, closure::Closure};
+        thread_local! {
+            static LISTENING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
         }
-    }
-
-    /// The session, subscribing the calling component to its changes
-    pub fn get(&self) -> Session {
-        self.state.cloned()
-    }
-
-    /// Fetches the bootstrap again ([`Session::after_refresh`] says what
-    /// its answer replaces). The current state stays until it answers. The
-    /// fetch runs on the root scope, so a refresh a form starts isn't
-    /// cancelled when the form goes away.
-    pub fn refresh(self) {
-        let generation = self.begin_refresh();
-        dioxus::core::spawn_forever(async move {
-            self.finish_refresh(generation, api::portal_session().await);
-        });
-    }
-
-    /// A refresh's generation, now the current one
-    fn begin_refresh(self) -> u64 {
-        let mut generation = self.generation;
-        let next = *generation.peek() + 1;
-        generation.set(next);
-        next
-    }
-
-    /// Applies a refresh's answer, unless a later refresh has started
-    fn finish_refresh(self, generation: u64, answer: Result<PortalSessionResponse, ApiError>) {
-        if *self.generation.peek() != generation {
+        if LISTENING.with(|l| l.replace(true)) {
             return;
         }
-        let mut next = self.state.peek().clone();
-        next.after_refresh(answer);
-        self.replace(next);
-    }
-
-    /// Sets the state, if it changed (so readers don't redraw for nothing)
-    fn replace(self, next: Session) {
-        if next != *self.state.peek() {
-            let mut state = self.state;
-            state.set(next);
+        let Some(window) = web_sys::window() else {
+            web_sys::console::warn_1(
+                &"agora-web: no window, so leaving the page won't warn of unsent drafts".into(),
+            );
+            return;
+        };
+        let warn = Closure::<dyn Fn(web_sys::BeforeUnloadEvent)>::new(
+            |event: web_sys::BeforeUnloadEvent| {
+                if UNSENT.with(|u| u.get()) {
+                    event.prevent_default();
+                    // Older browsers ask only when it is set
+                    event.set_return_value("unsent");
+                }
+            },
+        );
+        if let Err(e) =
+            window.add_event_listener_with_callback("beforeunload", warn.as_ref().unchecked_ref())
+        {
+            web_sys::console::warn_2(
+                &"agora-web: leaving the page won't warn of unsent drafts:".into(),
+                &e,
+            );
         }
+        // The page's whole life: one listener, never removed
+        warn.forget();
     }
 }
 
-/// Writes, through the session. Nothing calls them yet: step 4c's compose
-/// form is their first caller (and the `allow` goes with it).
-#[allow(dead_code, reason = "for step 4c's compose form, its first caller")]
-impl SessionHandle {
-    /// Updates the state for the refusal of a write made with `used`, and
-    /// refreshes if that's what it calls for
-    pub fn note_write_error(self, used: &SignedIn, error: &ApiError) {
-        let mut next = self.state.peek().clone();
-        let follow_up = next.after_write_error(used, error);
-        self.replace(next);
-        if follow_up == FollowUp::Refresh {
-            self.refresh();
-        }
-    }
-
-    /// [`api::create_post`] with `signed_in`'s token; a refusal updates
-    /// the session ([`Self::note_write_error`]). Spawn it where it outlives
-    /// the form (see the module docs)
-    pub async fn create_post(
-        self,
-        signed_in: &SignedIn,
-        request: &PortalPostRequest,
-    ) -> Result<PostCreated, ApiError> {
-        let answer = api::create_post(signed_in.portal(), request).await;
-        if let Err(e) = &answer {
-            self.note_write_error(signed_in, e);
-        }
-        answer
-    }
-
-    /// [`api::create_comment`] with `signed_in`'s token; a refusal updates
-    /// the session ([`Self::note_write_error`]). Spawn it where it outlives
-    /// the form (see the module docs)
-    pub async fn create_comment(
-        self,
-        signed_in: &SignedIn,
-        request: &PortalCommentRequest,
-    ) -> Result<WriteAck<CommentId>, ApiError> {
-        let answer = api::create_comment(signed_in.portal(), request).await;
-        if let Err(e) = &answer {
-            self.note_write_error(signed_in, e);
-        }
-        answer
-    }
-}
-
-/// Puts the session in `dom`'s root context, loading, for every component
-/// in the island ([`use_session`]); nothing is fetched until one reads it
+/// Puts agentkit's session in `dom`'s root context, over [`ApiPortal`]
 pub fn provide(dom: &VirtualDom) {
-    dom.in_scope(ScopeId::ROOT, || {
-        provide_context(SessionHandle::new_root());
-    });
+    agora_agentkit::ui::session::provide(dom, ApiPortal);
 }
 
-/// The session, from the root's [`provide`]. The first reader to mount
-/// starts the bootstrap, in an effect, after the first render; a later one
-/// finds it started (its generation moved) and starts nothing
-pub fn use_session() -> SessionHandle {
-    let handle: SessionHandle = use_context();
-    // Reads with `peek`, so it subscribes to nothing and runs once
+/// The attribute on `<html>` saying an operator is signed in, which
+/// `assets/site.css` hides the header's "Register" under. The header is
+/// the server's static markup, which can't know; this client can, once
+/// the session is read
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+pub const SIGNED_IN_ATTRIBUTE: &str = "data-signed-in";
+
+/// Marks the document while the session is signed in, and unmarks it on
+/// sign-out ([`SIGNED_IN_ATTRIBUTE`]). Draws nothing; in the client's
+/// session slot, so never in the first render (hydration matches), and the
+/// mark is set in an effect, after the session read. Unknown (loading, or
+/// a failed read) leaves the mark as it is
+#[allow(non_snake_case)]
+pub fn SignedInMark() -> dioxus::prelude::Element {
+    use agora_agentkit::ui::session::{Session, try_use_session};
+    use dioxus::prelude::*;
+    let session = try_use_session();
     use_effect(move || {
-        if *handle.generation.peek() == 0 {
-            handle.refresh();
+        let Some(handle) = session else { return };
+        match handle.get() {
+            Session::SignedIn(_) => mark_signed_in(true),
+            Session::SignedOut => mark_signed_in(false),
+            Session::Loading | Session::Failed(_) => {}
         }
     });
-    handle
+    rsx! {}
 }
 
-/// The sign-in page, returning to `return_to` (a path on this site) after
-fn sign_in_href(return_to: Option<&str>) -> String {
-    // A base only to build the path and query with: the link is relative
-    let mut url = Url::parse("https://agora.invalid")
-        .and_then(|base| base.join(SIGN_IN))
-        .expect("a static URL parses");
-    if let Some(next) = return_to {
-        url.query_pairs_mut().append_pair("next", next);
-    }
-    url[Position::BeforePath..Position::AfterQuery].to_owned()
-}
-
-/// This page's path and query, to come back to after signing in
-fn here() -> Option<String> {
-    let location = api::page_location()?;
-    let mut path = location.pathname().ok()?;
-    path.push_str(&location.search().ok()?);
-    Some(path)
-}
-
-/// Who is signed in, from the context: [`SessionStatusView`] of
-/// [`use_session`], its "Try again" refreshing it
-#[component]
-pub fn SessionStatus() -> Element {
-    let handle = use_session();
-    let session = handle.get();
-    rsx! {
-        SessionStatusView {
-            session,
-            return_to: here(),
-            on_retry: move |_| handle.refresh(),
+/// Sets or clears [`SIGNED_IN_ATTRIBUTE`] on `<html>`. Nothing off the
+/// browser (the host tests)
+fn mark_signed_in(signed_in: bool) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let Some(root) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.document_element())
+        else {
+            web_sys::console::warn_1(
+                &"agora-web: no document, so the header's Register link stays".into(),
+            );
+            return;
+        };
+        let done = match signed_in {
+            true => root.set_attribute(SIGNED_IN_ATTRIBUTE, ""),
+            false => root.remove_attribute(SIGNED_IN_ATTRIBUTE),
+        };
+        if let Err(e) = done {
+            web_sys::console::warn_2(
+                &"agora-web: couldn't mark the document signed in or out:".into(),
+                &e,
+            );
         }
     }
-}
-
-/// Who is signed in, in one line: a sign-in link when no one is, and
-/// whether the operator can post.
-///
-/// Every state is drawn in one `role="status"` paragraph, so a screen
-/// reader announces the line as it changes (loading, then who is signed
-/// in), politely; none of it is urgent enough for `alert`.
-#[component]
-pub fn SessionStatusView(
-    /// What to draw
-    session: Session,
-    /// The page to come back to after signing in
-    return_to: Option<String>,
-    /// "Try again", after a failure
-    on_retry: EventHandler,
-) -> Element {
-    match session {
-        Session::Loading => rsx! {
-            p { class: "post-meta", role: "status", "Checking who is signed in…" }
-        },
-        Session::SignedOut => {
-            let href = sign_in_href(return_to.as_deref());
-            rsx! {
-                p { class: "post-meta", role: "status",
-                    "Not signed in. "
-                    a { href: "{href}", "Sign in" }
-                    " to post as an operator."
-                }
-            }
-        }
-        Session::Failed(e) => rsx! {
-            p { class: "post-meta", role: "status",
-                "Couldn't check who is signed in: {e} "
-                button {
-                    class: "pill pill-btn",
-                    r#type: "button",
-                    onclick: move |_| on_retry.call(()),
-                    "Try again"
-                }
-            }
-        },
-        Session::SignedIn(signed_in) => signed_in_line(&signed_in),
-    }
-}
-
-/// The signed-in line: who, and as whom they post, or why they can't
-fn signed_in_line(signed_in: &SignedIn) -> Element {
-    let operator = &signed_in.operator().display_name;
-    let poster = signed_in.poster().map(|poster| {
-        let href = AgoraLink::Profile(GetProfileInput {
-            name: poster.name.clone(),
-        })
-        .site_path();
-        (href, poster.name.to_string())
-    });
-    rsx! {
-        p { class: "post-meta", role: "status",
-            "Signed in as {operator}"
-            match (signed_in.suspension(), poster) {
-                (Some(ban), _) => rsx! {
-                    ". {ban.human_summary()}. "
-                    a { href: "{ban.appeal_url}", "How to appeal" }
-                },
-                (None, None) => rsx! { ". You have no operator poster yet, so you can't post here." },
-                (None, Some((href, name))) => rsx! {
-                    ", posting as "
-                    a { href: "{href}", "{name}" }
-                },
-            }
-        }
-    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = signed_in;
 }
 
 #[cfg(test)]
-mod tests {
-    use agora_agentkit::{
-        errors::ApiErrorBody,
-        ids::{AgentId, OperatorId},
-        operator::CsrfToken,
-        responses::ErrorResponse,
-    };
-
-    use super::*;
-
-    /// A token that must never be drawn or printed
-    const TOKEN: &str = "csrf-0f1e2d3c4b5a";
-
-    /// The bootstrap, as a typed value: agora-server builds this agentkit
-    /// struct and serde writes it. Its bytes are tested once, in
-    /// [`the_bootstrap_decodes`].
-    fn bootstrap_with(poster: bool, token: &str) -> PortalSessionResponse {
-        PortalSessionResponse {
-            operator: OperatorRef {
-                id: "34fb8f2e-0710-43c0-b592-a396969f1667".parse().unwrap(),
-                display_name: "mdegans".into(),
-            },
-            csrf_token: CsrfToken(token.into()),
-            poster: poster.then(|| AgentRef {
-                id: "8dbc9b3a-db55-47d5-8b14-5b913a1b44ac".parse().unwrap(),
-                name: "steward".parse().unwrap(),
-            }),
-        }
-    }
-
-    fn bootstrap(poster: bool) -> PortalSessionResponse {
-        bootstrap_with(poster, TOKEN)
-    }
-
-    fn signed_in(poster: bool) -> Session {
-        Session::from_bootstrap(Ok(bootstrap(poster)))
-    }
-
-    /// The `SignedIn` a write was made with
-    fn used(session: &Session) -> SignedIn {
-        match session {
-            Session::SignedIn(s) => s.clone(),
-            other => panic!("not signed in: {other:?}"),
-        }
-    }
-
-    fn banned() -> ApiError {
-        crate::api::tests::ban().into()
-    }
-
-    fn plain_403() -> ApiError {
-        ApiError::Forbidden(ApiErrorBody::Plain(ErrorResponse {
-            error: "a write must carry this session's CSRF token".into(),
-        }))
-    }
-
-    /// A `Decode`, as reading a body this client can't makes one
-    fn decode_error() -> ApiError {
-        serde_json::from_str::<PortalSessionResponse>("{}")
-            .unwrap_err()
-            .into()
-    }
-
-    /// Whether `session` is signed in and may try a write
-    fn can_write(session: &Session) -> bool {
-        matches!(session, Session::SignedIn(s) if s.can_write())
-    }
-
-    /// The bootstrap's bytes, as agora-server sends them: the shape its
-    /// `portal_api::tests::the_bootstrap_names_the_operator_its_token_and_its_poster`
-    /// asserts and agentkit's `portal_session_wire` round-trips (agora has
-    /// no on-disk wire snapshot of it: `snapshots/` holds the OpenAPI spec
-    /// and the MCP tools). With a poster and without one, `poster` absent.
+mod signed_in_tests {
+    /// The stylesheet hides "Register" under the very attribute the client
+    /// sets,
     #[test]
-    fn the_bootstrap_decodes() {
-        let with: PortalSessionResponse = serde_json::from_str(
-            r#"{
-                "operator": {
-                    "id": "34fb8f2e-0710-43c0-b592-a396969f1667",
-                    "display_name": "mdegans"
-                },
-                "csrf_token": "csrf-0f1e2d3c4b5a",
-                "poster": {"id": "8dbc9b3a-db55-47d5-8b14-5b913a1b44ac", "name": "steward"}
-            }"#,
-        )
-        .unwrap();
-        assert_eq!(with, bootstrap(true));
-        assert_eq!(
-            with.operator.id,
-            "34fb8f2e-0710-43c0-b592-a396969f1667"
-                .parse::<OperatorId>()
-                .unwrap()
+    fn the_stylesheet_hides_register_under_the_mark() {
+        let css = include_str!("../assets/site.css");
+        let rule = format!(
+            ":root[{}] .nav-register {{ display: none; }}",
+            super::SIGNED_IN_ATTRIBUTE
         );
-        assert_eq!(
-            with.poster.unwrap().id,
-            "8dbc9b3a-db55-47d5-8b14-5b913a1b44ac"
-                .parse::<AgentId>()
-                .unwrap()
-        );
-        let without: PortalSessionResponse = serde_json::from_str(
-            r#"{
-                "operator": {
-                    "id": "34fb8f2e-0710-43c0-b592-a396969f1667",
-                    "display_name": "mdegans"
-                },
-                "csrf_token": "csrf-0f1e2d3c4b5a"
-            }"#,
-        )
-        .unwrap();
-        assert_eq!(without, bootstrap(false));
-    }
-
-    #[test]
-    fn a_bootstrap_answer_is_a_state() {
-        assert!(can_write(&signed_in(true)));
-        // Signed in without a poster: nothing to post as
-        let without = used(&signed_in(false));
-        assert!(!without.can_write());
-        assert_eq!(without.operator().display_name, "mdegans");
-        assert_eq!(without.suspension(), None);
-
-        assert_eq!(
-            Session::from_bootstrap(Err(ApiError::SignedOut("not signed in".into()))),
-            Session::SignedOut
-        );
-        for e in [
-            ApiError::Network("offline".into()),
-            decode_error(),
-            ApiError::Status {
-                status: 502,
-                message: "no message".into(),
-            },
-            plain_403(),
-        ] {
-            assert_eq!(Session::from_bootstrap(Err(e.clone())), Session::Failed(e));
-        }
-    }
-
-    /// A refresh that fails other than with a 401 doesn't take a signed-in
-    /// page away; a 401 or a 200 replaces anything
-    #[test]
-    fn a_failed_refresh_keeps_signed_in() {
-        let mut session = signed_in(true);
-        session.after_refresh(Err(ApiError::Network("offline".into())));
-        assert_eq!(session, signed_in(true));
-        session.after_refresh(Err(ApiError::SignedOut("expired".into())));
-        assert_eq!(session, Session::SignedOut);
-        session.after_refresh(Ok(bootstrap(false)));
-        assert_eq!(session, signed_in(false));
-        // Not signed in: a failure is shown
-        let mut session = Session::SignedOut;
-        session.after_refresh(Err(ApiError::Network("offline".into())));
-        assert_eq!(
-            session,
-            Session::Failed(ApiError::Network("offline".into()))
-        );
-    }
-
-    /// A refresh of the same session keeps the suspension the page learned;
-    /// a new session starts clean
-    #[test]
-    fn a_refresh_keeps_a_known_suspension() {
-        let mut session = signed_in(true);
-        let write = used(&session);
-        session.after_write_error(&write, &banned());
-        session.after_refresh(Ok(bootstrap(true)));
-        assert!(used(&session).suspension().is_some());
-        session.after_refresh(Ok(bootstrap_with(true, "another-session")));
-        assert!(used(&session).suspension().is_none());
-    }
-
-    /// A 401 on this session's write signs the page out
-    #[test]
-    fn a_401_on_a_write_signs_out() {
-        for poster in [true, false] {
-            let mut session = signed_in(poster);
-            let write = used(&session);
-            let follow_up =
-                session.after_write_error(&write, &ApiError::SignedOut("expired".into()));
-            assert_eq!(session, Session::SignedOut);
-            assert_eq!(follow_up, FollowUp::Nothing);
-        }
-    }
-
-    /// A refusal of an older session's write doesn't touch a newer one: a
-    /// suspension isn't recorded, and a 401 asks the server instead
-    #[test]
-    fn an_older_sessions_refusal_leaves_the_new_one() {
-        let old = used(&signed_in(true));
-        let newer = Session::from_bootstrap(Ok(bootstrap_with(true, "newer-token")));
-
-        let mut session = newer.clone();
-        assert_eq!(
-            session.after_write_error(&old, &banned()),
-            FollowUp::Nothing
-        );
-        assert_eq!(session, newer);
-        assert!(can_write(&session));
-
-        let mut session = newer.clone();
-        assert_eq!(
-            session.after_write_error(&old, &ApiError::SignedOut("expired".into())),
-            FollowUp::Refresh
-        );
-        assert_eq!(session, newer);
-    }
-
-    /// A suspension is recorded: still signed in, reading, not writing
-    #[test]
-    fn a_suspension_stops_writes() {
-        let mut session = signed_in(true);
-        let write = used(&session);
-        assert_eq!(
-            session.after_write_error(&write, &banned()),
-            FollowUp::Nothing
-        );
-        let signed_in = used(&session);
-        assert!(!signed_in.can_write());
-        assert_eq!(
-            signed_in.suspension().unwrap().ban_reason.as_deref(),
-            Some("Art. IV test ban")
-        );
-        assert_eq!(signed_in.poster().unwrap().name.as_str(), "steward");
-    }
-
-    /// Another 403 (Origin, CSRF) and a 404 (perhaps no poster any more) ask
-    /// for the bootstrap again, and leave the state until that answers
-    #[test]
-    fn another_403_or_a_404_refreshes() {
-        for e in [
-            plain_403(),
-            ApiError::Status {
-                status: 404,
-                message: "you have no operator poster".into(),
-            },
-        ] {
-            let mut session = signed_in(true);
-            let write = used(&session);
-            assert_eq!(
-                session.after_write_error(&write, &e),
-                FollowUp::Refresh,
-                "{e}"
-            );
-            assert_eq!(session, signed_in(true), "{e}");
-        }
-    }
-
-    /// A refusal of the write itself is the write's business
-    #[test]
-    fn other_refusals_leave_the_session() {
-        for e in [
-            ApiError::Network("offline".into()),
-            decode_error(),
-            ApiError::Status {
-                status: 400,
-                message: "unknown field `x`".into(),
-            },
-            ApiError::Status {
-                status: 409,
-                message: "this action id was already used for a different request; \
-                          generate a new one for each action"
-                    .into(),
-            },
-        ] {
-            let mut session = signed_in(true);
-            let write = used(&session);
-            assert_eq!(
-                session.after_write_error(&write, &e),
-                FollowUp::Nothing,
-                "{e}"
-            );
-            assert_eq!(session, signed_in(true), "{e}");
-        }
-    }
-
-    /// The CSRF token is a credential: `Debug` never prints it
-    #[test]
-    fn debug_hides_the_token() {
-        let mut session = signed_in(true);
-        let write = used(&session);
-        session.after_write_error(&write, &banned());
-        let printed = format!("{session:?} {:#?}", signed_in(false));
-        assert!(!printed.contains(TOKEN), "{printed}");
-        assert!(printed.contains("[REDACTED]"), "{printed}");
-        assert!(printed.contains("mdegans"), "{printed}");
-    }
-
-    #[test]
-    fn sign_in_returns_here() {
-        assert_eq!(sign_in_href(None), "/agora/login");
-        assert_eq!(
-            sign_in_href(Some("/agora/app?x=1&y=2")),
-            "/agora/login?next=%2Fagora%2Fapp%3Fx%3D1%26y%3D2"
-        );
-    }
-
-    /// What [`SessionStatusView`] draws for `session`: rendered from a
-    /// component, since its `EventHandler` needs a runtime
-    fn draw(session: Session) -> String {
-        #[component]
-        fn Drawn(session: Session) -> Element {
-            rsx! {
-                SessionStatusView {
-                    session,
-                    return_to: Some("/agora/app".to_owned()),
-                    on_retry: |_| {},
-                }
-            }
-        }
-        let mut dom = VirtualDom::new_with_props(Drawn, DrawnProps { session });
-        dom.rebuild_in_place();
-        let html = dioxus_ssr::render(&dom);
-        assert!(!html.contains(TOKEN), "{html}");
-        // One polite live region, whatever the state
-        assert_eq!(html.matches(r#"role="status""#).count(), 1, "{html}");
-        html
-    }
-
-    #[test]
-    fn draws_loading() {
-        assert!(draw(Session::Loading).contains("Checking who is signed in…"));
-    }
-
-    #[test]
-    fn draws_signed_out_with_a_sign_in_link() {
-        let html = draw(Session::SignedOut);
-        assert!(html.contains("Not signed in."), "{html}");
-        assert!(
-            html.contains(r#"href="/agora/login?next=%2Fagora%2Fapp""#),
-            "{html}"
-        );
-    }
-
-    #[test]
-    fn draws_a_failure_with_try_again() {
-        let html = draw(Session::Failed(ApiError::Network("offline".into())));
-        assert!(
-            html.contains(
-                "Couldn&#39;t check who is signed in: Agora couldn&#39;t be reached (offline)"
-            ),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"<button class="pill pill-btn" type="button">Try again</button>"#),
-            "{html}"
-        );
-        for other in [Session::Loading, Session::SignedOut, signed_in(true)] {
-            assert!(!draw(other).contains("Try again"));
-        }
-    }
-
-    #[test]
-    fn draws_posting_as_the_poster() {
-        let html = draw(signed_in(true));
-        assert!(html.contains("Signed in as mdegans"), "{html}");
-        assert!(html.contains(", posting as "), "{html}");
-        assert!(
-            html.contains(r#"<a href="/agora/agent/steward">steward</a>"#),
-            "{html}"
-        );
-        assert!(!html.contains("Sign in"), "{html}");
-    }
-
-    #[test]
-    fn draws_no_poster() {
-        let html = draw(signed_in(false));
-        assert!(html.contains("Signed in as mdegans"), "{html}");
-        assert!(
-            html.contains("You have no operator poster yet, so you can&#39;t post here."),
-            "{html}"
-        );
-        assert!(!html.contains("posting as"), "{html}");
-    }
-
-    #[test]
-    fn draws_a_suspension() {
-        let mut session = signed_in(true);
-        let write = used(&session);
-        session.after_write_error(&write, &banned());
-        let html = draw(session);
-        assert!(html.contains("Signed in as mdegans"), "{html}");
-        assert!(
-            html.contains("Your account is suspended: you can read, but not post."),
-            "{html}"
-        );
-        assert!(
-            html.contains(r#"href="https://subliminal.technology/agora/protocol""#),
-            "{html}"
-        );
-        assert!(!html.contains("posting as"), "{html}");
-        assert!(!html.contains("file_appeal"), "{html}");
-    }
-
-    /// The root provides; every reader shares its one state, which starts
-    /// at loading (the render to a string doesn't poll the fetch it spawns)
-    #[test]
-    fn the_root_provides_one_session() {
-        let mut dom = two_readers();
-        dom.rebuild_in_place();
-        let html = dioxus_ssr::render(&dom);
-        assert_eq!(
-            html.matches("Checking who is signed in…").count(),
-            2,
-            "{html}"
-        );
-    }
-
-    /// A root with the session provided as `crate::site::dom` provides it,
-    /// and two readers in different places
-    fn two_readers() -> VirtualDom {
-        #[component]
-        fn Root() -> Element {
-            rsx! {
-                SessionStatus {}
-                div { SessionStatus {} }
-            }
-        }
-        let dom = VirtualDom::new(Root);
-        provide(&dom);
-        dom
-    }
-
-    /// The bootstrap is fetched after the first render, not during it: the
-    /// first render (the one hydration adopts) draws "loading" and has
-    /// started no refresh; then one refresh starts, whatever the number of
-    /// readers, and never again on its own
-    #[test]
-    fn the_bootstrap_starts_after_the_first_render() {
-        let mut dom = two_readers();
-        dom.rebuild_in_place();
-        let handle = dom.in_scope(ScopeId::ROOT, consume_context::<SessionHandle>);
-        let generation =
-            |dom: &VirtualDom| dom.in_scope(ScopeId::ROOT, || *handle.generation.peek());
-        assert_eq!(generation(&dom), 0, "a refresh started while rendering");
-        assert!(dioxus_ssr::render(&dom).contains("Checking who is signed in…"));
-        // The effects, then the refresh one of them spawned (which fails on
-        // the host)
-        dom.render_immediate(&mut dioxus::dioxus_core::NoOpMutations);
-        dom.process_events();
-        assert_eq!(generation(&dom), 1);
-        dom.render_immediate(&mut dioxus::dioxus_core::NoOpMutations);
-        dom.process_events();
-        assert_eq!(generation(&dom), 1, "an effect ran again");
-    }
-
-    /// A page that draws no reader fetches nothing
-    #[test]
-    fn no_reader_no_fetch() {
-        fn empty() -> Element {
-            rsx! {}
-        }
-        let mut dom = VirtualDom::new(empty);
-        provide(&dom);
-        dom.rebuild_in_place();
-        dom.render_immediate(&mut dioxus::dioxus_core::NoOpMutations);
-        dom.process_events();
-        let handle = dom.in_scope(ScopeId::ROOT, consume_context::<SessionHandle>);
-        assert_eq!(dom.in_scope(ScopeId::ROOT, || *handle.generation.peek()), 0);
-    }
-
-    // The handle, driven in a `VirtualDom` on the host. `process_events`
-    // polls the tasks a refresh spawns; outside a browser the bootstrap
-    // fetch fails at once (no page origin), so a real refresh settles in
-    // one call.
-
-    /// A mounted dom, and a handle made in it as the provider makes one
-    fn dom_and_handle() -> (VirtualDom, SessionHandle) {
-        fn empty() -> Element {
-            rsx! {}
-        }
-        let mut dom = VirtualDom::new(empty);
-        dom.rebuild_in_place();
-        let handle = dom.in_scope(ScopeId::ROOT, SessionHandle::new_root);
-        (dom, handle)
-    }
-
-    fn state(dom: &VirtualDom, handle: SessionHandle) -> Session {
-        dom.in_scope(ScopeId::ROOT, || handle.state.peek().clone())
-    }
-
-    fn set(dom: &VirtualDom, handle: SessionHandle, session: Session) {
-        dom.in_scope(ScopeId::ROOT, || handle.replace(session));
-    }
-
-    /// The real refresh: spawned on the root, its failure applied
-    #[test]
-    fn refresh_runs_and_settles() {
-        let (mut dom, handle) = dom_and_handle();
-        dom.in_scope(ScopeId::ROOT, || handle.refresh());
-        assert_eq!(state(&dom, handle), Session::Loading);
-        dom.process_events();
-        assert_eq!(
-            state(&dom, handle),
-            Session::Failed(ApiError::Network("no window location".into()))
-        );
-    }
-
-    /// The real refresh failing keeps a signed-in page signed in
-    #[test]
-    fn a_failing_refresh_keeps_signed_in() {
-        let (mut dom, handle) = dom_and_handle();
-        set(&dom, handle, signed_in(true));
-        dom.in_scope(ScopeId::ROOT, || handle.refresh());
-        dom.process_events();
-        assert_eq!(state(&dom, handle), signed_in(true));
-    }
-
-    /// An answer to a refresh that a later one overtook is dropped,
-    /// whichever order they answer in
-    #[test]
-    fn a_stale_refresh_answer_is_dropped() {
-        let (dom, handle) = dom_and_handle();
-        dom.in_scope(ScopeId::ROOT, || {
-            let first = handle.begin_refresh();
-            let second = handle.begin_refresh();
-            handle.finish_refresh(second, Ok(bootstrap(true)));
-            handle.finish_refresh(first, Err(ApiError::SignedOut("old".into())));
-        });
-        assert_eq!(state(&dom, handle), signed_in(true));
-    }
-
-    /// A write's refusal doesn't cancel a refresh in flight (only
-    /// refreshes compete on the generation)
-    #[test]
-    fn a_write_refusal_doesnt_drop_a_refresh() {
-        let (dom, handle) = dom_and_handle();
-        set(&dom, handle, signed_in(true));
-        let write = used(&signed_in(true));
-        dom.in_scope(ScopeId::ROOT, || {
-            let refresh = handle.begin_refresh();
-            handle.note_write_error(&write, &banned());
-            handle.finish_refresh(refresh, Ok(bootstrap_with(true, "newer-token")));
-        });
-        assert_eq!(
-            state(&dom, handle),
-            Session::from_bootstrap(Ok(bootstrap_with(true, "newer-token")))
-        );
-    }
-
-    /// Through the handle, a suspension is recorded only on the session
-    /// whose write it refused
-    #[test]
-    fn note_write_error_applies_to_the_matching_session_only() {
-        let (dom, handle) = dom_and_handle();
-        let newer = Session::from_bootstrap(Ok(bootstrap_with(true, "newer-token")));
-        set(&dom, handle, newer.clone());
-        let old = used(&signed_in(true));
-        dom.in_scope(ScopeId::ROOT, || handle.note_write_error(&old, &banned()));
-        assert_eq!(state(&dom, handle), newer);
-
-        let current = used(&newer);
-        dom.in_scope(ScopeId::ROOT, || {
-            handle.note_write_error(&current, &banned())
-        });
-        assert!(used(&state(&dom, handle)).suspension().is_some());
-    }
-
-    /// A 404 on a write refreshes through the handle (here, outside a
-    /// browser, the refresh fails, and the page stays signed in)
-    #[test]
-    fn a_404_refreshes_through_the_handle() {
-        let (mut dom, handle) = dom_and_handle();
-        set(&dom, handle, signed_in(true));
-        let write = used(&signed_in(true));
-        let generation = dom.in_scope(ScopeId::ROOT, || *handle.generation.peek());
-        dom.in_scope(ScopeId::ROOT, || {
-            handle.note_write_error(
-                &write,
-                &ApiError::Status {
-                    status: 404,
-                    message: "you have no operator poster".into(),
-                },
-            )
-        });
-        assert_eq!(
-            dom.in_scope(ScopeId::ROOT, || *handle.generation.peek()),
-            generation + 1
-        );
-        dom.process_events();
-        assert_eq!(state(&dom, handle), signed_in(true));
+        assert!(css.contains(&rule), "{rule}");
     }
 }

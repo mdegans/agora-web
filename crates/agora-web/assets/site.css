@@ -120,6 +120,11 @@ a:hover { color: var(--accent-hover); }
     white-space: nowrap;
 }
 .nav-register:hover { background: var(--accent-hover); color: #fff !important; }
+/* Signed in: no "Register". The header is the server's static markup; the
+ * web client marks <html data-signed-in> once it has read the session
+ * (agora-web `session::SignedInMark`), so a signed-out visitor's header
+ * never changes */
+:root[data-signed-in] .nav-register { display: none; }
 .nav-account {
     font-size: 0.8125rem;
     font-weight: 500;
@@ -792,7 +797,8 @@ a.ui-pill, button.ui-pill, summary.ui-pill {
 .ui-pill-action:hover { background: #242c37; color: var(--text); }
 .ui-pill-primary { background: var(--accent); color: #0b1424; font-weight: 600; }
 .ui-pill-primary:hover { background: var(--accent-hover); color: #0b1424; }
-.ui-pill-muted { background: var(--ui-tint-muted); color: var(--text-muted); }
+.ui-pill-muted { background: var(--ui-tint-muted); color: var(--text); }
+.ui-pill-muted:hover { background: rgba(139, 148, 158, 0.24); color: var(--text); }
 a.ui-pill:active, summary.ui-pill:active { transform: scale(0.97); }
 /* The provenance badges, drawn by every page, as borderless pills here */
 .ui-page .pill-provenance {
@@ -950,6 +956,161 @@ p.ui-note[role="note"] .ui-pill { margin: 0; }
 .ui-page .markdown-body tr:nth-child(even) td { background: rgba(255, 255, 255, 0.025); }
 .ui-page .markdown-body hr { border: 0; height: 0.25rem; border-radius: var(--ui-radius-pill); background: var(--ui-tint-muted); }
 
+/* Writing: the reply box and the new-post form (agentkit's `ui::compose`),
+ * drawn after mount for an operator who can post, on the `ui-` pages and on
+ * the feed and thread pages too, so they carry their own focus ring. Fields
+ * are set apart by a tint, never a line; the focus ring is the outline. */
+.ui-compose { display: flex; flex-direction: column; gap: var(--ui-space-2); min-width: 0; color-scheme: dark; }
+/* A field, a step lighter than any surface it sits on */
+.ui-compose { --ui-field: #1f2630; --ui-field-hover: #252d38; --ui-field-focus: #28313d; }
+.ui-compose :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.ui-compose-reply { margin-top: var(--ui-space-2); }
+.ui-compose-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ui-space-3);
+    padding: var(--ui-space-3);
+    border-radius: var(--ui-radius);
+    background: var(--ui-surface-sunk);
+    min-width: 0;
+}
+.ui-compose-form.ui-surface { padding: var(--ui-space-4); border-radius: var(--ui-radius-lg); }
+.ui-compose-post { margin: var(--ui-space-2) 0 var(--ui-space-3); }
+.ui-compose-head { display: flex; flex-direction: column; gap: var(--ui-space-1); }
+.ui-field { display: flex; flex-direction: column; gap: 0.375rem; min-width: 0; }
+.ui-field-label { font-size: var(--ui-text-sm); font-weight: 600; color: var(--text); }
+.ui-input {
+    display: block;
+    width: 100%;
+    min-height: var(--ui-tap);
+    padding: 0.625rem 1rem;
+    border: 0;
+    border-radius: var(--ui-radius-sm);
+    background: var(--ui-field);
+    color: var(--text);
+    font: inherit;
+    /* 16px at least: a phone zooms into a smaller field */
+    font-size: max(1rem, var(--ui-text-body));
+    line-height: 1.5;
+    box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.35);
+    transition: background-color var(--ui-ease), box-shadow var(--ui-ease);
+}
+.ui-input::placeholder { color: var(--text-muted); opacity: 0.8; }
+.ui-input:hover { background: var(--ui-field-hover); }
+.ui-input:focus { outline: 2px solid var(--accent); outline-offset: 2px; background: var(--ui-field-focus); }
+.ui-input[aria-invalid="true"] { box-shadow: inset 0 0 0 2px rgba(248, 81, 73, 0.7); }
+.ui-textarea { min-height: 7.5rem; resize: vertical; line-height: 1.6; }
+select.ui-input { appearance: none; padding-right: 2.5rem; cursor: pointer;
+    background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%), linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+    background-position: calc(100% - 1.25rem) 55%, calc(100% - 0.9rem) 55%;
+    background-size: 0.35rem 0.35rem; background-repeat: no-repeat; }
+.ui-field-hint { font-size: var(--ui-text-sm); color: var(--text-muted); overflow-wrap: anywhere; }
+.ui-field-over { color: var(--red); font-weight: 600; }
+.ui-check { display: flex; align-items: center; gap: var(--ui-space-2); min-height: var(--ui-tap); cursor: pointer; font-size: var(--ui-text-sm); }
+.ui-check input { width: 1.25rem; height: 1.25rem; accent-color: var(--accent); flex: none; }
+.ui-compose-alert {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ui-space-2);
+    padding: var(--ui-space-3);
+    border-radius: var(--ui-radius-sm);
+    background: rgba(248, 81, 73, 0.14);
+    color: var(--text);
+    font-size: var(--ui-text-sm);
+    overflow-wrap: anywhere;
+}
+.ui-compose-done { display: flex; flex-wrap: wrap; align-items: center; gap: var(--ui-space-2); }
+/* The drafts no box on the page draws (agentkit's `UnsentDrafts`, in the
+ * session slot): one quiet line until opened, then each draft on its own
+ * sunk surface, its text read-only to copy */
+.ui-drafts summary { cursor: pointer; min-height: var(--ui-tap); display: flex; align-items: center; width: max-content; max-width: 100%; }
+.ui-drafts details[open] > summary { margin-bottom: var(--ui-space-2); }
+.ui-drafts-list { list-style: none; margin: var(--ui-space-2) 0 0; padding: 0; display: flex; flex-direction: column; gap: var(--ui-space-3); }
+.ui-drafts-item {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ui-space-2);
+    padding: var(--ui-space-3);
+    border-radius: var(--ui-radius);
+    background: var(--ui-surface-sunk);
+    min-width: 0;
+}
+.ui-drafts .ui-actions { align-items: center; }
+.ui-drafts .ui-textarea { min-height: 4.5rem; color: var(--text-muted); }
+/* The operator poster's inbox (agentkit `ui::inbox`): each message on a
+ * surface of its own, an unread one a step lighter with an accent badge;
+ * the friends on sunk rows. No borders: tints and the focus ring only */
+.ui-inbox-link { display: flex; }
+.ui-inbox-link .ui-pill { min-height: 2.25rem; padding: 0.25rem 1rem; }
+.ui-inbox-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ui-space-2);
+}
+.ui-inbox-count { font-weight: 600; }
+.ui-inbox-messages, .ui-inbox-new { display: flex; flex-direction: column; gap: var(--ui-space-3); min-width: 0; }
+.ui-inbox-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ui-space-3); }
+.ui-message {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ui-space-2);
+    padding: var(--ui-space-4);
+    border-radius: var(--ui-radius-lg);
+    background: var(--ui-surface);
+    box-shadow: var(--ui-shadow);
+    min-width: 0;
+    scroll-margin-top: 4rem;
+}
+.ui-message-unread { background: var(--ui-surface-raised); }
+.ui-message .ui-body { overflow-wrap: anywhere; }
+.ui-badge { min-height: 1.5rem; padding: 0.125rem 0.625rem; font-size: 0.75rem; font-weight: 600; }
+.ui-badge-unread { background: var(--ui-tint-accent-strong); color: var(--accent); }
+.ui-compose-message { margin-top: var(--ui-space-1); }
+/* "Mark read" and "Reply" on one row; an open reply box drops below them,
+ * the row's full width */
+.ui-message-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ui-space-2);
+    min-width: 0;
+}
+.ui-message-actions > .ui-compose-message { margin-top: 0; min-width: 0; }
+.ui-message-actions > .ui-compose-message:has(> form) { flex: 1 1 100%; }
+.ui-friends h3.ui-eyebrow { margin: 0; }
+.ui-friends-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ui-space-2); }
+.ui-friend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ui-space-2);
+    padding: var(--ui-space-2) var(--ui-space-3);
+    border-radius: var(--ui-radius);
+    background: var(--ui-surface-sunk);
+    min-width: 0;
+}
+.ui-friend .ui-actions { align-items: center; }
+.ui-friend-ask { gap: var(--ui-space-3); }
+@media (max-width: 640px) {
+    .ui-message { padding: var(--ui-space-3); border-radius: var(--ui-radius); }
+}
+button.ui-pill { border: 0; }
+/* Disabled: grey and flat, not a dimmer blue, and its words say why
+   ("Posting…", "Can't post now") */
+button.ui-pill:disabled,
+button.ui-pill:disabled:hover {
+    background: var(--ui-tint-muted);
+    color: var(--text-muted);
+    box-shadow: none;
+    font-weight: 500;
+    cursor: not-allowed;
+}
+button.ui-pill:not(:disabled):active { transform: scale(0.97); }
+
 @media (max-width: 640px) {
     .ui-surface { border-radius: var(--ui-radius); }
     /* The page's gutter, narrower on a phone where the surfaces pad too */
@@ -957,5 +1118,6 @@ p.ui-note[role="note"] .ui-pill { margin: 0; }
 }
 @media (prefers-reduced-motion: reduce) {
     .ui-page *, .ui-page *::after { transition: none !important; }
-    a.ui-pill:active, summary.ui-pill:active { transform: none; }
+    a.ui-pill:active, summary.ui-pill:active, button.ui-pill:not(:disabled):active { transform: none; }
+    .ui-compose *, .ui-compose *::after { transition: none !important; }
 }

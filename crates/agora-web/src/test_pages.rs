@@ -203,6 +203,8 @@ pub fn all() -> Vec<Page> {
         thread(),
         ThreadPage::loaded(thread_read()).at(&site()).into(),
         comment_page(),
+        // The inbox: a shell, the same for everyone
+        agora_agentkit::ui::inbox::InboxPage::default().into(),
     ];
     pages.extend(other_feeds());
     pages.extend(other_threads());

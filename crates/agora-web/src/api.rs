@@ -9,21 +9,28 @@
 //! session's CSRF token, an agentkit type out). Both go through [`send`] on
 //! the one [`CLIENT`], which maps a refusal to an [`ApiError`] in one place.
 //! The endpoint functions ([`feed`], [`communities`], [`thread`],
-//! [`comment`], [`portal_session`], [`create_post`], [`create_comment`])
+//! [`comment`], [`portal_session`], [`create_post`], [`create_comment`],
+//! [`inbox`], [`friends`], [`mark_read`], [`friendship`], [`message_tap`],
+//! [`send_message`])
 //! are short wrappers that name the path and the
 //! types. The portal's routes are authenticated by the portal's session
 //! cookie, which the browser sends on a same-origin request.
 
-use std::sync::LazyLock;
+use std::{sync::LazyLock, time::Duration};
 
 use agora_agentkit::{
     errors::ApiErrorBody,
     ids::{CommentId, PostId},
-    operator::{CSRF_HEADER, PortalCommentRequest, PortalPostRequest, PortalSessionResponse},
+    operator::{
+        CSRF_HEADER, PortalCommentRequest, PortalFriendshipRequest, PortalMarkReadRequest,
+        PortalMarkReadResponse, PortalMessageRequest, PortalMessageTap, PortalPostRequest,
+        PortalSessionResponse,
+    },
     requests::{GetContentInput, GetFeedInput},
     responses::{
-        BanInfoResponse, BanSource, CommentChainResponse, CommunityResponse, ContentResponse,
-        ErrorResponse, PostCreated, PostResponse, PostWithCommentsResponse, WriteAck,
+        CommentChainResponse, CommunityResponse, ContentResponse, ErrorResponse, FriendsResponse,
+        InboxResponse, PostCreated, PostResponse, PostWithCommentsResponse, SendMessageResponse,
+        StatusResponse, WriteAck,
     },
 };
 use reqwest::{
@@ -54,6 +61,24 @@ const PORTAL_POSTS: &str = "/agora/api/portal/poster/posts";
 /// `POST /api/portal/poster/comments` (`portal_api::handlers::create_comment`)
 const PORTAL_COMMENTS: &str = "/agora/api/portal/poster/comments";
 
+/// `GET /api/portal/poster/inbox` (`portal_api::handlers::get_inbox`): the
+/// operator poster's inbox, marking nothing
+const PORTAL_INBOX: &str = "/agora/api/portal/poster/inbox";
+
+/// `POST /api/portal/poster/inbox/read` (`portal_api::handlers::mark_read`)
+const PORTAL_INBOX_READ: &str = "/agora/api/portal/poster/inbox/read";
+
+/// `GET` and `POST /api/portal/poster/friends` (`portal_api::handlers::
+/// get_friends`, `friendship`)
+const PORTAL_FRIENDS: &str = "/agora/api/portal/poster/friends";
+
+/// `POST /api/portal/poster/messages/tap` (`portal_api::handlers::
+/// message_tap`): the passkey tap a private message needs
+const PORTAL_MESSAGE_TAP: &str = "/agora/api/portal/poster/messages/tap";
+
+/// `POST /api/portal/poster/messages` (`portal_api::handlers::message`)
+const PORTAL_MESSAGES: &str = "/agora/api/portal/poster/messages";
+
 /// The one client every request is made with.
 ///
 /// Not for speed: on wasm32 reqwest's `Client` is an `Arc` around an empty
@@ -62,127 +87,38 @@ const PORTAL_COMMENTS: &str = "/agora/api/portal/poster/comments";
 /// same configuration, should it ever get some (default headers, say).
 static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
-/// Why a request failed, as the page tells the cases apart: not signed in
-/// (sign in), refused (say why; a suspension says more), or the request
-/// never got a usable answer (try again).
+/// Why a request failed: agentkit's (`ui::session::ApiError`), the one the
+/// shared components read. reqwest's errors are kept as their text
+/// ([`network`])
+pub use agora_agentkit::ui::session::ApiError;
+
+/// How long a request may go unanswered before it is given up: the whole
+/// request, the answer's body included (reqwest's wasm client aborts the
+/// `fetch` through an `AbortController` when it passes).
 ///
-/// `Clone` and `PartialEq`, as the session state that holds one must be
-/// (a component's props). So the source errors that are neither
-/// (`reqwest::Error`, `serde_json::Error`) are kept as their text, by
-/// manual `From` impls, and `?` still converts them.
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
-pub enum ApiError {
-    /// The request never got an answer (offline, the server down)
-    #[error("Agora couldn't be reached ({0})")]
-    Network(String),
-    /// 401: no live portal session (none, signed out, expired, or its
-    /// passkey suspended); the server's message
-    #[error("not signed in to Agora ({0})")]
-    SignedOut(String),
-    /// 403: refused. A suspended operator's write is a
-    /// [`ApiErrorBody::Suspended`] (see [`ApiError::suspension`]); a
-    /// request from another origin or without this session's CSRF token is
-    /// the plain `{"error": …}` envelope. Displayed as
-    /// [`ApiErrorBodyExt::human_message`]: a suspension as a line for a
-    /// person, not the server's `message`, which is written for an agent on
-    /// MCP ("call the `file_appeal` tool")
-    #[error("{}", .0.human_message())]
-    Forbidden(ApiErrorBody),
-    /// Any other refusal (a 400, 404, 409, 5xx, …); the server's message
-    /// when it sent one
-    #[error("Agora answered {status}: {message}")]
-    Status { status: u16, message: String },
-    /// The answer wasn't what this client's agentkit expects (or, which
-    /// agentkit's types make all but impossible, a request body couldn't be
-    /// written)
-    #[error("Agora's answer couldn't be read ({0})")]
-    Decode(String),
-}
+/// Without one, a phone that loses its signal mid-request waits forever:
+/// "Posting…", the submit disabled, nothing to press. 30 seconds is well
+/// past any answer the server gives in normal running (a write is one
+/// short transaction; the slowest read, a thread at the largest comment
+/// budget, takes well under a second), and short enough that the person
+/// gets a way to try again while they are still looking. A timed-out
+/// write is a network failure, so an unknown outcome
+/// (`ApiError::outcome_unknown`): the box keeps the text and its action id,
+/// and the retry can't post twice. A timed-out read is a failed load with
+/// "Try again"
+pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
 
-impl ApiError {
-    /// The suspension, when this is a suspended operator's (or poster's)
-    /// refused write
-    pub fn suspension(&self) -> Option<&BanInfoResponse> {
-        match self {
-            Self::Forbidden(body) => body.suspension(),
-            _ => None,
-        }
-    }
-}
+/// What a person is told of a request [`ANSWER_TIMEOUT`] cut off, inside
+/// agentkit's "Agora couldn't be reached (…)"
+const TIMED_OUT: &str = "no answer within 30 seconds";
 
-/// A refusal, by what its status means: a 401 is signed out, a 403 is
-/// refused with its body, anything else keeps its status and message
-impl From<(StatusCode, ApiErrorBody)> for ApiError {
-    fn from((status, body): (StatusCode, ApiErrorBody)) -> Self {
-        match status {
-            StatusCode::UNAUTHORIZED => Self::SignedOut(body.message().to_owned()),
-            StatusCode::FORBIDDEN => Self::Forbidden(body),
-            _ => Self::Status {
-                status: status.as_u16(),
-                message: body.message().to_owned(),
-            },
-        }
-    }
-}
-
-/// A suspension is always a 403
-impl From<BanInfoResponse> for ApiError {
-    fn from(ban: BanInfoResponse) -> Self {
-        Self::Forbidden(ban.into())
-    }
-}
-
-impl From<reqwest::Error> for ApiError {
-    fn from(e: reqwest::Error) -> Self {
-        Self::Network(e.to_string())
-    }
-}
-
-/// A path that doesn't join the page's origin: there is no request to make
-impl From<url::ParseError> for ApiError {
-    fn from(e: url::ParseError) -> Self {
-        Self::Network(e.to_string())
-    }
-}
-
-impl From<serde_json::Error> for ApiError {
-    fn from(e: serde_json::Error) -> Self {
-        Self::Decode(e.to_string())
-    }
-}
-
-/// The line for a person about a suspension, in the client until the
-/// human and agent display traits are decided (Steward, 2026-11-14)
-pub trait BanInfoExt {
-    /// The suspension, in a line for a person in a browser. (The server's
-    /// `message` is for an agent: it names MCP tools.)
-    fn human_summary(&self) -> &'static str;
-}
-
-impl BanInfoExt for BanInfoResponse {
-    fn human_summary(&self) -> &'static str {
-        match self.ban_source {
-            BanSource::Operator => "Your account is suspended: you can read, but not post",
-            BanSource::Agent => "Your operator poster is suspended: you can read, but not post",
-        }
-    }
-}
-
-/// The client's own words for a refusal. (`ApiErrorBody::suspension` is
-/// agentkit's since 0.162.0; the wording for people stays here until the
-/// human and agent display traits are decided.)
-pub trait ApiErrorBodyExt {
-    /// The text for a person: a suspension's [`BanInfoExt::human_summary`],
-    /// otherwise the body's own message
-    fn human_message(&self) -> String;
-}
-
-impl ApiErrorBodyExt for ApiErrorBody {
-    fn human_message(&self) -> String {
-        match self.suspension() {
-            Some(ban) => format!("{}.", ban.human_summary()),
-            None => format!("Agora refused it: {}", self.message()),
-        }
+/// A transport failure from reqwest: no answer to read. A timeout says so
+/// in words; anything else keeps reqwest's text
+fn network(e: reqwest::Error) -> ApiError {
+    if e.is_timeout() {
+        ApiError::Network(TIMED_OUT.into())
+    } else {
+        ApiError::network(e)
     }
 }
 
@@ -208,13 +144,15 @@ fn endpoint(path: &str) -> Result<Url, ApiError> {
 /// the portal's routes need; also the browser's default, but saying so
 /// keeps this from depending on it) and reads the answer: `T` from a
 /// success, an [`ApiError`] from anything else ([`refused`], the one place
-/// a refusal is mapped).
+/// a refusal is mapped). Every request, read or write, is given up after
+/// [`ANSWER_TIMEOUT`] ([`network`] words it).
 async fn send<T: DeserializeOwned>(request: reqwest::RequestBuilder) -> Result<T, ApiError> {
+    let request = request.timeout(ANSWER_TIMEOUT);
     #[cfg(target_arch = "wasm32")]
     let request = request.fetch_credentials_same_origin();
-    let response = request.send().await?;
+    let response = request.send().await.map_err(network)?;
     let status = response.status();
-    let text = response.text().await?;
+    let text = response.text().await.map_err(network)?;
     if !status.is_success() {
         return Err(refused(status, &text));
     }
@@ -222,15 +160,14 @@ async fn send<T: DeserializeOwned>(request: reqwest::RequestBuilder) -> Result<T
 }
 
 /// A refusal's status and text, as an [`ApiError`]: a text that isn't one
-/// of agentkit's error bodies reads as "no message"
+/// of agentkit's error bodies (a gateway's page, say) reads as "no
+/// message", with no code. Whether a failed write may still have been
+/// written is agentkit's [`ApiError::outcome_unknown`] (any 5xx, whoever
+/// sent it)
 fn refused(status: StatusCode, text: &str) -> ApiError {
-    let body = serde_json::from_str::<ApiErrorBody>(text).unwrap_or_else(|_| {
-        ErrorResponse {
-            error: "no message".into(),
-        }
-        .into()
-    });
-    (status, body).into()
+    let body = serde_json::from_str::<ApiErrorBody>(text)
+        .unwrap_or_else(|_| ErrorResponse::new("no message").into());
+    ApiError::refused(status.as_u16(), body)
 }
 
 /// `GET path?query`: any read. `query` is serialized into the query string
@@ -346,8 +283,8 @@ fn content_query(
 
 /// Who is signed in to the portal: the bootstrap a page starts from. A
 /// [`ApiError::SignedOut`] when no one is. Answered for a suspended operator
-/// too, which can't write: the answer doesn't say so (see
-/// [`crate::session`]).
+/// too, which can't write: its `suspension` says why (the operator's, or
+/// its poster's), and agentkit's session reads it (`SignedIn::can_write`).
 pub async fn portal_session() -> Result<PortalSessionResponse, ApiError> {
     get(PORTAL_SESSION, &()).await
 }
@@ -375,9 +312,62 @@ pub async fn create_comment(
     post(session, PORTAL_COMMENTS, request).await
 }
 
+/// The operator poster's inbox: its private messages and broadcasts, as
+/// the server lists them. Reading marks nothing
+pub async fn inbox() -> Result<InboxResponse, ApiError> {
+    get(PORTAL_INBOX, &()).await
+}
+
+/// The operator poster's friends and friend requests
+pub async fn friends() -> Result<FriendsResponse, ApiError> {
+    get(PORTAL_FRIENDS, &()).await
+}
+
+/// Marks messages of the poster's inbox read, with `session`'s CSRF token
+pub async fn mark_read(
+    session: &PortalSessionResponse,
+    request: &PortalMarkReadRequest,
+) -> Result<PortalMarkReadResponse, ApiError> {
+    post(session, PORTAL_INBOX_READ, request).await
+}
+
+/// A friendship action by the poster, with `session`'s CSRF token
+pub async fn friendship(
+    session: &PortalSessionResponse,
+    request: &PortalFriendshipRequest,
+) -> Result<StatusResponse, ApiError> {
+    post(session, PORTAL_FRIENDS, request).await
+}
+
+/// The passkey tap a private message needs (`request` without
+/// `assertion`), with `session`'s CSRF token: the options for the
+/// browser's prompt, or none when the send needs none
+pub async fn message_tap(
+    session: &PortalSessionResponse,
+    request: &PortalMessageRequest,
+) -> Result<PortalMessageTap, ApiError> {
+    post(session, PORTAL_MESSAGE_TAP, request).await
+}
+
+/// A private message by the poster, with the tap's `assertion` when one
+/// was asked for, and `session`'s CSRF token. `request.action_id` as for
+/// [`create_post`]: a retry with the same id and payload is answered as
+/// the first was, with or without the assertion
+pub async fn send_message(
+    session: &PortalSessionResponse,
+    request: &PortalMessageRequest,
+) -> Result<SendMessageResponse, ApiError> {
+    post(session, PORTAL_MESSAGES, request).await
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
-    use agora_agentkit::{errors::AccountSuspended, ids::OperatorActionId, operator::CsrfToken};
+    use agora_agentkit::{
+        errors::{AccountSuspended, RefusalCode},
+        ids::OperatorActionId,
+        operator::CsrfToken,
+        responses::{BanInfoResponse, BanSource},
+    };
 
     use super::*;
 
@@ -460,10 +450,7 @@ pub(crate) mod tests {
 
     /// The plain envelope's bytes, as the server writes them
     fn plain(message: &str) -> String {
-        serde_json::to_string(&ErrorResponse {
-            error: message.into(),
-        })
-        .unwrap()
+        serde_json::to_string(&ErrorResponse::new(message)).unwrap()
     }
 
     #[test]
@@ -472,13 +459,15 @@ pub(crate) mod tests {
             refusal(404, r#"{"error":"no community named x"}"#),
             ApiError::Status {
                 status: 404,
-                message: "no community named x".into()
+                message: "no community named x".into(),
+                code: None,
             }
         );
-        assert_eq!(
-            refusal(502, "<html>bad gateway</html>").to_string(),
-            "Agora answered 502: no message"
-        );
+        // A gateway's page: no message, no code, and a write's outcome is
+        // unknown (it may have been committed behind the gateway)
+        let gateway = refusal(502, "<html>bad gateway</html>");
+        assert_eq!(gateway.to_string(), "Agora answered 502: no message");
+        assert!(gateway.outcome_unknown());
     }
 
     /// The portal's 401 (agora-server `PortalRefusal::SignedOut`) is "not
@@ -529,33 +518,59 @@ pub(crate) mod tests {
         // A 403 with no readable body is still a refusal, not a network error
         assert_eq!(
             refusal(403, "<html>forbidden</html>"),
-            ApiError::Forbidden(ApiErrorBody::Plain(ErrorResponse {
-                error: "no message".into()
-            }))
+            ApiError::Forbidden(ApiErrorBody::Plain(ErrorResponse::new("no message")))
         );
     }
 
-    /// Other refusals a write documents keep their status and message (the
-    /// 409 is agora-server's `REUSED_ACTION_ID`)
+    /// Other refusals a write documents keep their status, message and
+    /// code (the 409 with `reused_action_id` is agora-server's
+    /// `OpError::ReusedActionId`)
     #[test]
     fn write_refusals_keep_their_status() {
-        for (status, message) in [
-            (400, "unknown field `x`"),
-            (404, "you have no operator poster"),
+        let reused = "this action id was already used for a different request; generate a new one for each action";
+        for (status, body, code) in [
+            (400, plain("unknown field `x`"), None),
+            (404, plain("you have no operator poster"), None),
             (
                 409,
-                "this action id was already used for a different request; generate a new one for each action",
+                serde_json::to_string(&ErrorResponse::coded(RefusalCode::ReusedActionId, reused))
+                    .unwrap(),
+                Some(RefusalCode::ReusedActionId),
             ),
-            (413, "too large"),
+            (413, plain("too large"), None),
         ] {
-            assert_eq!(
-                refusal(status, &plain(message)),
-                ApiError::Status {
-                    status,
-                    message: message.into()
-                }
+            let e = refusal(status, &body);
+            assert!(
+                matches!(&e, ApiError::Status { status: s, code: c, .. } if *s == status && *c == code),
+                "{e:?}"
             );
+            assert_eq!(e.code(), code);
+            assert!(!e.outcome_unknown(), "a 4xx wrote nothing");
         }
+        // The server's own coded words are read from the code, not the text
+        let wire = format!(r#"{{"error":"{reused}","code":"reused_action_id"}}"#);
+        assert_eq!(
+            refusal(409, &wire).code(),
+            Some(RefusalCode::ReusedActionId)
+        );
+    }
+
+    /// The timeout's words name its length, so the constant and the words
+    /// can't drift; and a request built through `send`'s path carries it.
+    /// (Whether a real `fetch` is aborted when it passes is reqwest's, and
+    /// is not tested here: see agentkit's
+    /// `a_write_that_times_out_is_an_unknown_outcome` for what the box does
+    /// with the failure)
+    #[test]
+    fn the_timeout_is_said_with_its_length() {
+        assert_eq!(
+            TIMED_OUT,
+            format!("no answer within {} seconds", ANSWER_TIMEOUT.as_secs())
+        );
+        let e = ApiError::Network(TIMED_OUT.into());
+        assert!(e.outcome_unknown());
+        assert!(e.for_a_person().contains("may or may not have been posted"));
+        assert!(e.for_a_person().contains(TIMED_OUT));
     }
 
     /// `?` turns a serde error into a `Decode`, keeping its text
@@ -618,6 +633,7 @@ pub(crate) mod tests {
             },
             csrf_token: CsrfToken("tok-123".into()),
             poster: None,
+            suspension: None,
         };
         let sent = r#"{"action_id":"0c4bd4a4-8f3d-4f3a-9f50-6d1f4f9b2a10","payload":{"reply_to":"7ad26ccd","body":"b"}}"#;
         let request: PortalCommentRequest = serde_json::from_str(sent).unwrap();

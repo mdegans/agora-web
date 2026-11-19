@@ -106,7 +106,9 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// What the island's session slot draws once mounted (agentkit's
 /// `ClientOnly`, first in every page's root; empty on the server and in the
 /// first render): who is signed in, the way to the poster's inbox with its
-/// unread count (agentkit's `InboxLink`, nothing without a poster), the drafts no box on this page draws
+/// unread count (agentkit's `InboxLink`, nothing without a poster), the
+/// mark that hides the header's "Register" while signed in
+/// ([`session::SignedInMark`]), the drafts no box on this page draws
 /// (agentkit's `UnsentDrafts`, nothing when there are none), which client
 /// this is, and on a feed the new-post form (agentkit's `NewPost`, which
 /// draws nothing unless the session can post)
@@ -116,6 +118,7 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 fn session_line() -> Element {
     rsx! {
         div { class: "session-slot",
+            session::SignedInMark {}
             SessionStatus {}
             InboxLink {}
             UnsentDrafts {}

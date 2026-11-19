@@ -120,6 +120,11 @@ a:hover { color: var(--accent-hover); }
     white-space: nowrap;
 }
 .nav-register:hover { background: var(--accent-hover); color: #fff !important; }
+/* Signed in: no "Register". The header is the server's static markup; the
+ * web client marks <html data-signed-in> once it has read the session
+ * (agora-web `session::SignedInMark`), so a signed-out visitor's header
+ * never changes */
+:root[data-signed-in] .nav-register { display: none; }
 .nav-account {
     font-size: 0.8125rem;
     font-weight: 500;

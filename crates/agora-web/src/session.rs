@@ -180,3 +180,75 @@ fn warn_before_leaving() {
 pub fn provide(dom: &VirtualDom) {
     agora_agentkit::ui::session::provide(dom, ApiPortal);
 }
+
+/// The attribute on `<html>` saying an operator is signed in, which
+/// `assets/site.css` hides the header's "Register" under. The header is
+/// the server's static markup, which can't know; this client can, once
+/// the session is read
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+pub const SIGNED_IN_ATTRIBUTE: &str = "data-signed-in";
+
+/// Marks the document while the session is signed in, and unmarks it on
+/// sign-out ([`SIGNED_IN_ATTRIBUTE`]). Draws nothing; in the client's
+/// session slot, so never in the first render (hydration matches), and the
+/// mark is set in an effect, after the session read. Unknown (loading, or
+/// a failed read) leaves the mark as it is
+#[allow(non_snake_case)]
+pub fn SignedInMark() -> dioxus::prelude::Element {
+    use agora_agentkit::ui::session::{Session, try_use_session};
+    use dioxus::prelude::*;
+    let session = try_use_session();
+    use_effect(move || {
+        let Some(handle) = session else { return };
+        match handle.get() {
+            Session::SignedIn(_) => mark_signed_in(true),
+            Session::SignedOut => mark_signed_in(false),
+            Session::Loading | Session::Failed(_) => {}
+        }
+    });
+    rsx! {}
+}
+
+/// Sets or clears [`SIGNED_IN_ATTRIBUTE`] on `<html>`. Nothing off the
+/// browser (the host tests)
+fn mark_signed_in(signed_in: bool) {
+    #[cfg(target_arch = "wasm32")]
+    {
+        let Some(root) = web_sys::window()
+            .and_then(|w| w.document())
+            .and_then(|d| d.document_element())
+        else {
+            web_sys::console::warn_1(
+                &"agora-web: no document, so the header's Register link stays".into(),
+            );
+            return;
+        };
+        let done = match signed_in {
+            true => root.set_attribute(SIGNED_IN_ATTRIBUTE, ""),
+            false => root.remove_attribute(SIGNED_IN_ATTRIBUTE),
+        };
+        if let Err(e) = done {
+            web_sys::console::warn_2(
+                &"agora-web: couldn't mark the document signed in or out:".into(),
+                &e,
+            );
+        }
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    let _ = signed_in;
+}
+
+#[cfg(test)]
+mod signed_in_tests {
+    /// The stylesheet hides "Register" under the very attribute the client
+    /// sets,
+    #[test]
+    fn the_stylesheet_hides_register_under_the_mark() {
+        let css = include_str!("../assets/site.css");
+        let rule = format!(
+            ":root[{}] .nav-register {{ display: none; }}",
+            super::SIGNED_IN_ATTRIBUTE
+        );
+        assert!(css.contains(&rule), "{rule}");
+    }
+}

@@ -45,19 +45,26 @@ pub fn get(
     }
 }
 
-/// base64url (no padding) to bytes; `None` for text that isn't
+/// base64url (RFC 4648 §5, no padding, as WebAuthn's JSON writes it) to
+/// bytes; `None` for text that isn't: a character outside the alphabet
+/// (`+` and `/`, standard base64's, included), padding, a length no
+/// encoding has (one past a multiple of four), or bits left over that an
+/// encoder would have written as zero
 #[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
 pub fn from_b64url(text: &str) -> Option<Vec<u8>> {
+    if text.len() % 4 == 1 {
+        return None;
+    }
     let mut out = Vec::with_capacity(text.len() * 3 / 4);
     let mut acc = 0u32;
     let mut bits = 0u32;
-    for c in text.trim_end_matches('=').bytes() {
+    for c in text.bytes() {
         let v = match c {
             b'A'..=b'Z' => c - b'A',
             b'a'..=b'z' => c - b'a' + 26,
             b'0'..=b'9' => c - b'0' + 52,
-            b'-' | b'+' => 62,
-            b'_' | b'/' => 63,
+            b'-' => 62,
+            b'_' => 63,
             _ => return None,
         };
         acc = (acc << 6) | u32::from(v);
@@ -68,7 +75,8 @@ pub fn from_b64url(text: &str) -> Option<Vec<u8>> {
             acc &= (1 << bits) - 1;
         }
     }
-    Some(out)
+    // What is left is padding bits, zero in a canonical encoding
+    (acc == 0).then_some(out)
 }
 
 /// Bytes to base64url, no padding
@@ -88,6 +96,127 @@ pub fn to_b64url(bytes: &[u8]) -> String {
     out
 }
 
+/// The binary members of the request options, decoded, for a browser
+/// without `PublicKeyCredential.parseRequestOptionsFromJSON`: the
+/// challenge, and each allowed credential's id in the options' order.
+///
+/// Only these are decoded. The options' `extensions` are passed on as
+/// they came, so a binary member inside them (PRF's salts, say) would
+/// reach the browser as text, not bytes; and only `publicKey` is passed to
+/// `credentials.get`, so a `mediation` beside it is dropped. Both are fine
+/// only while the message tap asks for no extensions and no mediation
+/// (agora `security::start_message_tap`): one that does needs them decoded
+/// here too, or the hand-built path refused for it.
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+#[derive(Debug, PartialEq)]
+pub struct RequestBinary {
+    pub challenge: Vec<u8>,
+    pub allowed: Vec<Vec<u8>>,
+}
+
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+impl RequestBinary {
+    /// Reads them from the options' `publicKey` part, or says which isn't
+    /// base64url
+    pub fn of(options: &serde_json::Value) -> Result<Self, TapFailed> {
+        let challenge = options
+            .get("challenge")
+            .and_then(|c| c.as_str())
+            .and_then(from_b64url)
+            .ok_or_else(|| {
+                TapFailed::Failed("the tap's options have no base64url challenge".into())
+            })?;
+        let allowed = match options.get("allowCredentials") {
+            None | Some(serde_json::Value::Null) => Vec::new(),
+            Some(serde_json::Value::Array(list)) => list
+                .iter()
+                .map(|c| {
+                    c.get("id")
+                        .and_then(|id| id.as_str())
+                        .and_then(from_b64url)
+                        .ok_or_else(|| TapFailed::Failed("a credential id isn't base64url".into()))
+                })
+                .collect::<Result<_, _>>()?,
+            Some(_) => {
+                return Err(TapFailed::Failed(
+                    "the tap's allowCredentials isn't a list".into(),
+                ));
+            }
+        };
+        Ok(Self { challenge, allowed })
+    }
+}
+
+/// What a browser without `PublicKeyCredential.toJSON()` answered, read
+/// from its credential: built into the same JSON by [`Self::to_json`].
+///
+/// `extensions` is `getClientExtensionResults()` through `JSON.stringify`,
+/// so a binary member in it is not encoded (an `ArrayBuffer` stringifies
+/// to `{}`); fine only while the message tap asks for no extensions (see
+/// [`RequestBinary`]).
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+#[derive(Debug, Default)]
+pub struct Answer {
+    pub id: String,
+    pub kind: String,
+    pub raw_id: Vec<u8>,
+    pub attachment: Option<String>,
+    pub extensions: serde_json::Map<String, serde_json::Value>,
+    pub client_data_json: Vec<u8>,
+    pub authenticator_data: Vec<u8>,
+    pub signature: Vec<u8>,
+    pub user_handle: Option<Vec<u8>>,
+}
+
+/// `PublicKeyCredential.toJSON()`'s shape for an assertion
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AnswerJson<'a> {
+    id: &'a str,
+    #[serde(rename = "type")]
+    kind: &'a str,
+    raw_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    authenticator_attachment: Option<&'a str>,
+    client_extension_results: &'a serde_json::Map<String, serde_json::Value>,
+    response: ResponseJson,
+}
+
+/// Its `response`: the binary members base64url
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResponseJson {
+    #[serde(rename = "clientDataJSON")]
+    client_data_json: String,
+    authenticator_data: String,
+    signature: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_handle: Option<String>,
+}
+
+#[cfg_attr(not(any(target_arch = "wasm32", test)), allow(dead_code))]
+impl Answer {
+    /// `PublicKeyCredential.toJSON()`'s shape for an assertion: the binary
+    /// members base64url, `userHandle` and `authenticatorAttachment` only
+    /// when there is one
+    pub fn to_json(&self) -> Result<serde_json::Value, TapFailed> {
+        serde_json::to_value(AnswerJson {
+            id: &self.id,
+            kind: &self.kind,
+            raw_id: to_b64url(&self.raw_id),
+            authenticator_attachment: self.attachment.as_deref(),
+            client_extension_results: &self.extensions,
+            response: ResponseJson {
+                client_data_json: to_b64url(&self.client_data_json),
+                authenticator_data: to_b64url(&self.authenticator_data),
+                signature: to_b64url(&self.signature),
+                user_handle: self.user_handle.as_deref().map(to_b64url),
+            },
+        })
+        .map_err(|e| TapFailed::Failed(e.to_string()))
+    }
+}
+
 #[cfg(target_arch = "wasm32")]
 mod wasm {
     use std::{
@@ -104,7 +233,7 @@ mod wasm {
         wasm_bindgen::{JsCast, JsValue, closure::Closure},
     };
 
-    use super::{LocalBoxFuture, from_b64url, to_b64url};
+    use super::{Answer, LocalBoxFuture, RequestBinary};
 
     /// See [`super::get`]: the prompt is opened here, synchronously
     pub fn get(
@@ -168,20 +297,11 @@ mod wasm {
         if let Ok(parse) = field(&class, "parseRequestOptionsFromJSON").dyn_into::<Function>() {
             return parse.call1(&class, &parsed).map_err(|e| failure(&e));
         }
-        let challenge = options
-            .get("challenge")
-            .and_then(|c| c.as_str())
-            .and_then(from_b64url)
-            .ok_or_else(|| TapFailed::Failed("the tap's options have no challenge".into()))?;
-        set(&parsed, "challenge", &bytes(&challenge))?;
-        let allowed = field(&parsed, "allowCredentials");
-        if let Ok(allowed) = allowed.dyn_into::<Array>() {
-            for credential in allowed.iter() {
-                let id = field(&credential, "id")
-                    .as_string()
-                    .and_then(|id| from_b64url(&id))
-                    .ok_or_else(|| TapFailed::Failed("a credential id isn't base64url".into()))?;
-                set(&credential, "id", &bytes(&id))?;
+        let binary = RequestBinary::of(options)?;
+        set(&parsed, "challenge", &bytes(&binary.challenge))?;
+        if let Ok(allowed) = field(&parsed, "allowCredentials").dyn_into::<Array>() {
+            for (credential, id) in allowed.iter().zip(&binary.allowed) {
+                set(&credential, "id", &bytes(id))?;
             }
         }
         Ok(parsed)
@@ -192,58 +312,56 @@ mod wasm {
         Uint8Array::from(bytes).buffer().into()
     }
 
-    /// An `ArrayBuffer` field as base64url; `None` when absent
-    fn b64_field(target: &JsValue, name: &str) -> Option<String> {
+    /// An `ArrayBuffer` field's bytes; `None` when absent
+    fn bytes_field(target: &JsValue, name: &str) -> Option<Vec<u8>> {
         let value = field(target, name);
         if value.is_null() || value.is_undefined() {
             return None;
         }
-        Some(to_b64url(&Uint8Array::new(&value).to_vec()))
+        Some(Uint8Array::new(&value).to_vec())
     }
 
-    /// `credential.toJSON()` where the browser has it, else the same shape
-    /// by hand
-    fn to_json(credential: &JsValue) -> Result<serde_json::Value, TapFailed> {
-        let json = match field(credential, "toJSON").dyn_into::<Function>() {
-            Ok(to_json) => to_json.call0(credential).map_err(|e| failure(&e))?,
-            Err(_) => {
-                let response = field(credential, "response");
-                let out = Object::new();
-                set(&out, "id", &field(credential, "id"))?;
-                set(&out, "type", &field(credential, "type"))?;
-                let raw = b64_field(credential, "rawId").unwrap_or_default();
-                set(&out, "rawId", &JsValue::from_str(&raw))?;
-                set(
-                    &out,
-                    "authenticatorAttachment",
-                    &field(credential, "authenticatorAttachment"),
-                )?;
-                let extensions = field(credential, "getClientExtensionResults")
-                    .dyn_into::<Function>()
-                    .ok()
-                    .and_then(|f| f.call0(credential).ok())
-                    .unwrap_or_else(|| Object::new().into());
-                set(&out, "clientExtensionResults", &extensions)?;
-                let inner = Object::new();
-                for name in [
-                    "clientDataJSON",
-                    "authenticatorData",
-                    "signature",
-                    "userHandle",
-                ] {
-                    if let Some(text) = b64_field(&response, name) {
-                        set(&inner, name, &JsValue::from_str(&text))?;
-                    }
-                }
-                set(&out, "response", &inner)?;
-                out.into()
-            }
-        };
-        let text = JSON::stringify(&json)
+    /// A JS value as JSON, through `JSON.stringify`
+    fn as_json(value: &JsValue) -> Result<serde_json::Value, TapFailed> {
+        let text = JSON::stringify(value)
             .map_err(|e| TapFailed::Failed(described(&e)))?
             .as_string()
             .unwrap_or_default();
         serde_json::from_str(&text).map_err(|e| TapFailed::Failed(e.to_string()))
+    }
+
+    /// `credential.toJSON()` where the browser has it, else the same shape
+    /// by hand ([`Answer`])
+    fn to_json(credential: &JsValue) -> Result<serde_json::Value, TapFailed> {
+        if let Ok(to_json) = field(credential, "toJSON").dyn_into::<Function>() {
+            return as_json(&to_json.call0(credential).map_err(|e| failure(&e))?);
+        }
+        let response = field(credential, "response");
+        let required = |name: &str| {
+            bytes_field(&response, name)
+                .ok_or_else(|| TapFailed::Failed(format!("the passkey's answer has no {name}")))
+        };
+        // No results, or results that aren't an object: none
+        let extensions = match field(credential, "getClientExtensionResults").dyn_into::<Function>()
+        {
+            Ok(f) => match as_json(&f.call0(credential).map_err(|e| failure(&e))?)? {
+                serde_json::Value::Object(results) => results,
+                _ => serde_json::Map::new(),
+            },
+            Err(_) => serde_json::Map::new(),
+        };
+        Answer {
+            id: field(credential, "id").as_string().unwrap_or_default(),
+            kind: field(credential, "type").as_string().unwrap_or_default(),
+            raw_id: bytes_field(credential, "rawId").unwrap_or_default(),
+            attachment: field(credential, "authenticatorAttachment").as_string(),
+            extensions,
+            client_data_json: required("clientDataJSON")?,
+            authenticator_data: required("authenticatorData")?,
+            signature: required("signature")?,
+            user_handle: bytes_field(&response, "userHandle"),
+        }
+        .to_json()
     }
 
     /// A DOMException's `name: message`, or whatever it says of itself
@@ -348,6 +466,97 @@ mod tests {
         assert_eq!(to_b64url(b"foobar"), "Zm9vYmFy");
         assert_eq!(to_b64url(&[0xfb, 0xff, 0xfe]), "-__-");
         assert_eq!(from_b64url("not base64!"), None);
+    }
+
+    /// Anything that isn't base64url as WebAuthn writes it is refused, not
+    /// read as something else: standard base64's `+` and `/`, padding, a
+    /// length no encoding has, and bits an encoder would have zeroed
+    #[test]
+    fn malformed_base64url_is_refused() {
+        for text in [
+            "+__-", "-__+", "/w", "_w/", "Zm9vYg==", "Zm9vYg=", "Zg=", "A", "Zm9vY",
+            // "f" is "Zg"; "Zh" has the leftover bits set
+            "Zh", " Zg", "Zg\n",
+        ] {
+            assert_eq!(from_b64url(text), None, "{text:?}");
+        }
+        assert_eq!(from_b64url("Zg").as_deref(), Some(&b"f"[..]));
+        assert_eq!(from_b64url("").as_deref(), Some(&b""[..]));
+    }
+
+    fn json(text: &str) -> serde_json::Value {
+        serde_json::from_str(text).unwrap()
+    }
+
+    /// The hand-built path decodes the challenge and each allowed
+    /// credential's id, in order, and refuses options it can't read
+    #[test]
+    fn the_request_options_binary_members_are_decoded() {
+        // "challenge", [1, 2, 3] and [0xfb, 0xff], base64url
+        let options = json(
+            r#"{"challenge": "Y2hhbGxlbmdl", "rpId": "localhost",
+                "allowCredentials": [{"type": "public-key", "id": "AQID"},
+                                     {"type": "public-key", "id": "-_8"}],
+                "userVerification": "required"}"#,
+        );
+        assert_eq!(
+            RequestBinary::of(&options).unwrap(),
+            RequestBinary {
+                challenge: b"challenge".to_vec(),
+                allowed: vec![vec![1, 2, 3], vec![0xfb, 0xff]],
+            }
+        );
+        let none = json(r#"{"challenge": "AAAA"}"#);
+        assert_eq!(
+            RequestBinary::of(&none).unwrap().allowed,
+            Vec::<Vec<u8>>::new()
+        );
+        for bad in [
+            r#"{"rpId": "localhost"}"#,
+            r#"{"challenge": "AA+A"}"#,
+            r#"{"challenge": 7}"#,
+            r#"{"challenge": "AAAA", "allowCredentials": [{"id": "a/b"}]}"#,
+            r#"{"challenge": "AAAA", "allowCredentials": [{"type": "public-key"}]}"#,
+            r#"{"challenge": "AAAA", "allowCredentials": {"id": "AAAA"}}"#,
+        ] {
+            assert!(
+                matches!(RequestBinary::of(&json(bad)), Err(TapFailed::Failed(_))),
+                "{bad}"
+            );
+        }
+    }
+
+    /// The answer built by hand has `toJSON()`'s shape, which the server
+    /// reads (`AssertionResponse`): binary members base64url, the optional
+    /// ones only when present
+    #[test]
+    fn the_answer_is_built_in_to_jsons_shape() {
+        let answer = Answer {
+            id: "a2V5".into(),
+            kind: "public-key".into(),
+            raw_id: b"key".to_vec(),
+            attachment: Some("platform".into()),
+            extensions: serde_json::Map::new(),
+            client_data_json: b"{}".to_vec(),
+            authenticator_data: vec![0; 3],
+            signature: vec![0x30, 0x45],
+            user_handle: Some(b"user".to_vec()),
+        };
+        assert_eq!(
+            answer.to_json().unwrap(),
+            json(
+                r#"{"id": "a2V5", "type": "public-key", "rawId": "a2V5",
+                    "authenticatorAttachment": "platform",
+                    "clientExtensionResults": {},
+                    "response": {"clientDataJSON": "e30", "authenticatorData": "AAAA",
+                                 "signature": "MEU", "userHandle": "dXNlcg"}}"#
+            )
+        );
+        // No attachment and no user handle: left out
+        let bare = Answer::default().to_json().unwrap();
+        assert!(bare.get("authenticatorAttachment").is_none(), "{bare}");
+        assert!(bare["response"].get("userHandle").is_none(), "{bare}");
+        assert_eq!(bare["clientExtensionResults"], json("{}"));
     }
 
     /// Wrapped or not, the `publicKey` part is what the prompt takes

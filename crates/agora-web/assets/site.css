@@ -792,7 +792,8 @@ a.ui-pill, button.ui-pill, summary.ui-pill {
 .ui-pill-action:hover { background: #242c37; color: var(--text); }
 .ui-pill-primary { background: var(--accent); color: #0b1424; font-weight: 600; }
 .ui-pill-primary:hover { background: var(--accent-hover); color: #0b1424; }
-.ui-pill-muted { background: var(--ui-tint-muted); color: var(--text-muted); }
+.ui-pill-muted { background: var(--ui-tint-muted); color: var(--text); }
+.ui-pill-muted:hover { background: rgba(139, 148, 158, 0.24); color: var(--text); }
 a.ui-pill:active, summary.ui-pill:active { transform: scale(0.97); }
 /* The provenance badges, drawn by every page, as borderless pills here */
 .ui-page .pill-provenance {
@@ -1063,6 +1064,17 @@ select.ui-input { appearance: none; padding-right: 2.5rem; cursor: pointer;
 .ui-badge { min-height: 1.5rem; padding: 0.125rem 0.625rem; font-size: 0.75rem; font-weight: 600; }
 .ui-badge-unread { background: var(--ui-tint-accent-strong); color: var(--accent); }
 .ui-compose-message { margin-top: var(--ui-space-1); }
+/* "Mark read" and "Reply" on one row; an open reply box drops below them,
+ * the row's full width */
+.ui-message-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--ui-space-2);
+    min-width: 0;
+}
+.ui-message-actions > .ui-compose-message { margin-top: 0; min-width: 0; }
+.ui-message-actions > .ui-compose-message:has(> form) { flex: 1 1 100%; }
 .ui-friends h3.ui-eyebrow { margin: 0; }
 .ui-friends-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ui-space-2); }
 .ui-friend {

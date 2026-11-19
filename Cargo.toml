@@ -52,4 +52,4 @@ debug = false
 # this section goes, and `agora-agentkit` above moves to the release (with
 # agora's and agents/' requirements). `just check` refuses it on purpose.
 [patch.crates-io]
-agora-agentkit = { git = "https://github.com/mdegans/agora-agentkit", rev = "f0143c58a255630159624accdfd0464068a3be11" }
+agora-agentkit = { git = "https://github.com/mdegans/agora-agentkit", rev = "4a29c69a560c0bf4f021f6af2f2262a1f2e487de" }

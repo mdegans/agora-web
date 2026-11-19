@@ -1032,6 +1032,55 @@ select.ui-input { appearance: none; padding-right: 2.5rem; cursor: pointer;
 }
 .ui-drafts .ui-actions { align-items: center; }
 .ui-drafts .ui-textarea { min-height: 4.5rem; color: var(--text-muted); }
+/* The operator poster's inbox (agentkit `ui::inbox`): each message on a
+ * surface of its own, an unread one a step lighter with an accent badge;
+ * the friends on sunk rows. No borders: tints and the focus ring only */
+.ui-inbox-link { display: flex; }
+.ui-inbox-link .ui-pill { min-height: 2.25rem; padding: 0.25rem 1rem; }
+.ui-inbox-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ui-space-2);
+}
+.ui-inbox-count { font-weight: 600; }
+.ui-inbox-messages, .ui-inbox-new { display: flex; flex-direction: column; gap: var(--ui-space-3); min-width: 0; }
+.ui-inbox-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ui-space-3); }
+.ui-message {
+    display: flex;
+    flex-direction: column;
+    gap: var(--ui-space-2);
+    padding: var(--ui-space-4);
+    border-radius: var(--ui-radius-lg);
+    background: var(--ui-surface);
+    box-shadow: var(--ui-shadow);
+    min-width: 0;
+    scroll-margin-top: 4rem;
+}
+.ui-message-unread { background: var(--ui-surface-raised); }
+.ui-message .ui-body { overflow-wrap: anywhere; }
+.ui-badge { min-height: 1.5rem; padding: 0.125rem 0.625rem; font-size: 0.75rem; font-weight: 600; }
+.ui-badge-unread { background: var(--ui-tint-accent-strong); color: var(--accent); }
+.ui-compose-message { margin-top: var(--ui-space-1); }
+.ui-friends h3.ui-eyebrow { margin: 0; }
+.ui-friends-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: var(--ui-space-2); }
+.ui-friend {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--ui-space-2);
+    padding: var(--ui-space-2) var(--ui-space-3);
+    border-radius: var(--ui-radius);
+    background: var(--ui-surface-sunk);
+    min-width: 0;
+}
+.ui-friend .ui-actions { align-items: center; }
+.ui-friend-ask { gap: var(--ui-space-3); }
+@media (max-width: 640px) {
+    .ui-message { padding: var(--ui-space-3); border-radius: var(--ui-radius); }
+}
 button.ui-pill { border: 0; }
 /* Disabled: grey and flat, not a dimmer blue, and its words say why
    ("Posting…", "Can't post now") */

@@ -9,7 +9,9 @@
 //! session's CSRF token, an agentkit type out). Both go through [`send`] on
 //! the one [`CLIENT`], which maps a refusal to an [`ApiError`] in one place.
 //! The endpoint functions ([`feed`], [`communities`], [`thread`],
-//! [`comment`], [`portal_session`], [`create_post`], [`create_comment`])
+//! [`comment`], [`portal_session`], [`create_post`], [`create_comment`],
+//! [`inbox`], [`friends`], [`mark_read`], [`friendship`], [`message_tap`],
+//! [`send_message`])
 //! are short wrappers that name the path and the
 //! types. The portal's routes are authenticated by the portal's session
 //! cookie, which the browser sends on a same-origin request.
@@ -19,11 +21,16 @@ use std::{sync::LazyLock, time::Duration};
 use agora_agentkit::{
     errors::ApiErrorBody,
     ids::{CommentId, PostId},
-    operator::{CSRF_HEADER, PortalCommentRequest, PortalPostRequest, PortalSessionResponse},
+    operator::{
+        CSRF_HEADER, PortalCommentRequest, PortalFriendshipRequest, PortalMarkReadRequest,
+        PortalMarkReadResponse, PortalMessageRequest, PortalMessageTap, PortalPostRequest,
+        PortalSessionResponse,
+    },
     requests::{GetContentInput, GetFeedInput},
     responses::{
-        CommentChainResponse, CommunityResponse, ContentResponse, ErrorResponse, PostCreated,
-        PostResponse, PostWithCommentsResponse, WriteAck,
+        CommentChainResponse, CommunityResponse, ContentResponse, ErrorResponse, FriendsResponse,
+        InboxResponse, PostCreated, PostResponse, PostWithCommentsResponse, SendMessageResponse,
+        StatusResponse, WriteAck,
     },
 };
 use reqwest::{
@@ -53,6 +60,24 @@ const PORTAL_POSTS: &str = "/agora/api/portal/poster/posts";
 
 /// `POST /api/portal/poster/comments` (`portal_api::handlers::create_comment`)
 const PORTAL_COMMENTS: &str = "/agora/api/portal/poster/comments";
+
+/// `GET /api/portal/poster/inbox` (`portal_api::handlers::get_inbox`): the
+/// operator poster's inbox, marking nothing
+const PORTAL_INBOX: &str = "/agora/api/portal/poster/inbox";
+
+/// `POST /api/portal/poster/inbox/read` (`portal_api::handlers::mark_read`)
+const PORTAL_INBOX_READ: &str = "/agora/api/portal/poster/inbox/read";
+
+/// `GET` and `POST /api/portal/poster/friends` (`portal_api::handlers::
+/// get_friends`, `friendship`)
+const PORTAL_FRIENDS: &str = "/agora/api/portal/poster/friends";
+
+/// `POST /api/portal/poster/messages/tap` (`portal_api::handlers::
+/// message_tap`): the passkey tap a private message needs
+const PORTAL_MESSAGE_TAP: &str = "/agora/api/portal/poster/messages/tap";
+
+/// `POST /api/portal/poster/messages` (`portal_api::handlers::message`)
+const PORTAL_MESSAGES: &str = "/agora/api/portal/poster/messages";
 
 /// The one client every request is made with.
 ///
@@ -285,6 +310,54 @@ pub async fn create_comment(
     request: &PortalCommentRequest,
 ) -> Result<WriteAck<CommentId>, ApiError> {
     post(session, PORTAL_COMMENTS, request).await
+}
+
+/// The operator poster's inbox: its private messages and broadcasts, as
+/// the server lists them. Reading marks nothing
+pub async fn inbox() -> Result<InboxResponse, ApiError> {
+    get(PORTAL_INBOX, &()).await
+}
+
+/// The operator poster's friends and friend requests
+pub async fn friends() -> Result<FriendsResponse, ApiError> {
+    get(PORTAL_FRIENDS, &()).await
+}
+
+/// Marks messages of the poster's inbox read, with `session`'s CSRF token
+pub async fn mark_read(
+    session: &PortalSessionResponse,
+    request: &PortalMarkReadRequest,
+) -> Result<PortalMarkReadResponse, ApiError> {
+    post(session, PORTAL_INBOX_READ, request).await
+}
+
+/// A friendship action by the poster, with `session`'s CSRF token
+pub async fn friendship(
+    session: &PortalSessionResponse,
+    request: &PortalFriendshipRequest,
+) -> Result<StatusResponse, ApiError> {
+    post(session, PORTAL_FRIENDS, request).await
+}
+
+/// The passkey tap a private message needs (`request` without
+/// `assertion`), with `session`'s CSRF token: the options for the
+/// browser's prompt, or none when the send needs none
+pub async fn message_tap(
+    session: &PortalSessionResponse,
+    request: &PortalMessageRequest,
+) -> Result<PortalMessageTap, ApiError> {
+    post(session, PORTAL_MESSAGE_TAP, request).await
+}
+
+/// A private message by the poster, with the tap's `assertion` when one
+/// was asked for, and `session`'s CSRF token. `request.action_id` as for
+/// [`create_post`]: a retry with the same id and payload is answered as
+/// the first was, with or without the assertion
+pub async fn send_message(
+    session: &PortalSessionResponse,
+    request: &PortalMessageRequest,
+) -> Result<SendMessageResponse, ApiError> {
+    post(session, PORTAL_MESSAGES, request).await
 }
 
 #[cfg(test)]

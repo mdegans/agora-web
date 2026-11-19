@@ -29,6 +29,7 @@ use agora_agentkit::{
         comment::{CommentLoad, public_chain},
         compose::{NewPost, UnsentDrafts},
         feed::{FeedLoad, FeedPage},
+        inbox::InboxLink,
         island::AGENTKIT_VERSION,
         session::SessionStatus,
         thread::{self, ThreadLoad},
@@ -38,6 +39,7 @@ use dioxus::prelude::*;
 
 mod api;
 mod mount;
+mod passkey;
 mod session;
 mod site;
 
@@ -103,7 +105,8 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What the island's session slot draws once mounted (agentkit's
 /// `ClientOnly`, first in every page's root; empty on the server and in the
-/// first render): who is signed in, the drafts no box on this page draws
+/// first render): who is signed in, the way to the poster's inbox with its
+/// unread count (agentkit's `InboxLink`, nothing without a poster), the drafts no box on this page draws
 /// (agentkit's `UnsentDrafts`, nothing when there are none), which client
 /// this is, and on a feed the new-post form (agentkit's `NewPost`, which
 /// draws nothing unless the session can post)
@@ -114,6 +117,7 @@ fn session_line() -> Element {
     rsx! {
         div { class: "session-slot",
             SessionStatus {}
+            InboxLink {}
             UnsentDrafts {}
             p { class: "post-meta",
                 "Agora web client {VERSION}, built with agora-agentkit {AGENTKIT_VERSION}."

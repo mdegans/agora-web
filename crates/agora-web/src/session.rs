@@ -10,9 +10,16 @@
 
 use agora_agentkit::{
     ids::CommentId,
-    operator::{PortalCommentRequest, PortalPostRequest, PortalSessionResponse},
-    responses::{CommunityResponse, PostCreated, WriteAck},
-    ui::session::{ApiError, Portal},
+    operator::{
+        PortalCommentRequest, PortalFriendshipRequest, PortalMarkReadRequest,
+        PortalMarkReadResponse, PortalMessageRequest, PortalMessageTap, PortalPostRequest,
+        PortalSessionResponse,
+    },
+    responses::{
+        CommunityResponse, FriendsResponse, InboxResponse, PostCreated, SendMessageResponse,
+        StatusResponse, WriteAck,
+    },
+    ui::session::{ApiError, Portal, TapFailed},
 };
 use dioxus::prelude::VirtualDom;
 
@@ -67,6 +74,58 @@ impl Portal for ApiPortal {
         if unsent {
             warn_before_leaving();
         }
+    }
+
+    fn inbox(&self) -> LocalBoxFuture<'static, Result<InboxResponse, ApiError>> {
+        Box::pin(api::inbox())
+    }
+
+    fn friends(&self) -> LocalBoxFuture<'static, Result<FriendsResponse, ApiError>> {
+        Box::pin(api::friends())
+    }
+
+    fn mark_read(
+        &self,
+        session: &PortalSessionResponse,
+        request: &PortalMarkReadRequest,
+    ) -> LocalBoxFuture<'static, Result<PortalMarkReadResponse, ApiError>> {
+        let (session, request) = (session.clone(), request.clone());
+        Box::pin(async move { api::mark_read(&session, &request).await })
+    }
+
+    fn friendship(
+        &self,
+        session: &PortalSessionResponse,
+        request: &PortalFriendshipRequest,
+    ) -> LocalBoxFuture<'static, Result<StatusResponse, ApiError>> {
+        let (session, request) = (session.clone(), request.clone());
+        Box::pin(async move { api::friendship(&session, &request).await })
+    }
+
+    fn message_tap(
+        &self,
+        session: &PortalSessionResponse,
+        request: &PortalMessageRequest,
+    ) -> LocalBoxFuture<'static, Result<PortalMessageTap, ApiError>> {
+        let (session, request) = (session.clone(), request.clone());
+        Box::pin(async move { api::message_tap(&session, &request).await })
+    }
+
+    fn send_message(
+        &self,
+        session: &PortalSessionResponse,
+        request: &PortalMessageRequest,
+    ) -> LocalBoxFuture<'static, Result<SendMessageResponse, ApiError>> {
+        let (session, request) = (session.clone(), request.clone());
+        Box::pin(async move { api::send_message(&session, &request).await })
+    }
+
+    /// The browser's prompt, opened before this returns ([`crate::passkey`])
+    fn passkey(
+        &self,
+        options: &serde_json::Value,
+    ) -> LocalBoxFuture<'static, Result<serde_json::Value, TapFailed>> {
+        crate::passkey::get(options)
     }
 }
 

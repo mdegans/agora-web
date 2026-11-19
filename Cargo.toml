@@ -21,7 +21,7 @@ repository = "https://github.com/mdegans/agora-web"
 # agora-server's build.rs compares the two requirements as literal strings,
 # so the client and the server always share one agentkit (the wire types).
 # Bump it here in the same change as agora's.
-agora-agentkit = { version = "0.170.0" }
+agora-agentkit = { version = "0.171.0" }
 # Dioxus's defaults less `devtools`: in a debug build (scripts/dev.sh's)
 # dioxus-web would open a websocket to `/_dioxus` for `dx serve` and retry
 # it forever. `just dev` (`dx serve`) turns it back on through agora-web's
@@ -45,11 +45,3 @@ panic = "abort"
 [profile.wasm-dev]
 inherits = "dev"
 debug = false
-
-# DRAFT ONLY, never merge: the unreleased agentkit integration branch
-# (`integration/0.171.0`: compose, agentkit#341, and the portal inbox,
-# agentkit#342) this change needs. Before merge the lead releases agentkit,
-# this section goes, and `agora-agentkit` above moves to the release (with
-# agora's and agents/' requirements). `just check` refuses it on purpose.
-[patch.crates-io]
-agora-agentkit = { git = "https://github.com/mdegans/agora-agentkit", rev = "3ca85b8c3cfc4a80d82804766882d2cd58f42fa3" }

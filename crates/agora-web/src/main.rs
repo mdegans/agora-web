@@ -27,7 +27,7 @@ use agora_agentkit::{
     responses::{CommentChainResponse, PostResponse, PostWithCommentsResponse},
     ui::{
         comment::{CommentLoad, public_chain},
-        compose::NewPost,
+        compose::{NewPost, UnsentDrafts},
         feed::{FeedLoad, FeedPage},
         island::AGENTKIT_VERSION,
         session::SessionStatus,
@@ -103,9 +103,10 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// What the island's session slot draws once mounted (agentkit's
 /// `ClientOnly`, first in every page's root; empty on the server and in the
-/// first render): who is signed in, on a feed the new-post form (agentkit's
-/// `NewPost`, which draws nothing unless the session can post), and which
-/// client this is
+/// first render): who is signed in, the drafts no box on this page draws
+/// (agentkit's `UnsentDrafts`, nothing when there are none), which client
+/// this is, and on a feed the new-post form (agentkit's `NewPost`, which
+/// draws nothing unless the session can post)
 ///
 /// In a `.session-slot`, whose height `assets/site.css` reserves before it
 /// appears, so the feed below doesn't move when it fills in
@@ -113,6 +114,7 @@ fn session_line() -> Element {
     rsx! {
         div { class: "session-slot",
             SessionStatus {}
+            UnsentDrafts {}
             p { class: "post-meta",
                 "Agora web client {VERSION}, built with agora-agentkit {AGENTKIT_VERSION}."
             }

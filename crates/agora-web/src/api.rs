@@ -14,7 +14,7 @@
 //! types. The portal's routes are authenticated by the portal's session
 //! cookie, which the browser sends on a same-origin request.
 
-use std::sync::LazyLock;
+use std::{sync::LazyLock, time::Duration};
 
 use agora_agentkit::{
     errors::ApiErrorBody,
@@ -67,9 +67,34 @@ static CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 /// ([`network`])
 pub use agora_agentkit::ui::session::ApiError;
 
-/// A transport failure from reqwest: no answer to read
+/// How long a request may go unanswered before it is given up: the whole
+/// request, the answer's body included (reqwest's wasm client aborts the
+/// `fetch` through an `AbortController` when it passes).
+///
+/// Without one, a phone that loses its signal mid-request waits forever:
+/// "Posting…", the submit disabled, nothing to press. 30 seconds is well
+/// past any answer the server gives in normal running (a write is one
+/// short transaction; the slowest read, a thread at the largest comment
+/// budget, takes well under a second), and short enough that the person
+/// gets a way to try again while they are still looking. A timed-out
+/// write is a network failure, so an unknown outcome
+/// (`ApiError::outcome_unknown`): the box keeps the text and its action id,
+/// and the retry can't post twice. A timed-out read is a failed load with
+/// "Try again"
+pub const ANSWER_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// What a person is told of a request [`ANSWER_TIMEOUT`] cut off, inside
+/// agentkit's "Agora couldn't be reached (…)"
+const TIMED_OUT: &str = "no answer within 30 seconds";
+
+/// A transport failure from reqwest: no answer to read. A timeout says so
+/// in words; anything else keeps reqwest's text
 fn network(e: reqwest::Error) -> ApiError {
-    ApiError::network(e)
+    if e.is_timeout() {
+        ApiError::Network(TIMED_OUT.into())
+    } else {
+        ApiError::network(e)
+    }
 }
 
 /// The page's location; `None` outside a browser (the host tests, where
@@ -94,8 +119,10 @@ fn endpoint(path: &str) -> Result<Url, ApiError> {
 /// the portal's routes need; also the browser's default, but saying so
 /// keeps this from depending on it) and reads the answer: `T` from a
 /// success, an [`ApiError`] from anything else ([`refused`], the one place
-/// a refusal is mapped).
+/// a refusal is mapped). Every request, read or write, is given up after
+/// [`ANSWER_TIMEOUT`] ([`network`] words it).
 async fn send<T: DeserializeOwned>(request: reqwest::RequestBuilder) -> Result<T, ApiError> {
+    let request = request.timeout(ANSWER_TIMEOUT);
     #[cfg(target_arch = "wasm32")]
     let request = request.fetch_credentials_same_origin();
     let response = request.send().await.map_err(network)?;
@@ -453,6 +480,24 @@ pub(crate) mod tests {
             refusal(409, &wire).code(),
             Some(RefusalCode::ReusedActionId)
         );
+    }
+
+    /// The timeout's words name its length, so the constant and the words
+    /// can't drift; and a request built through `send`'s path carries it.
+    /// (Whether a real `fetch` is aborted when it passes is reqwest's, and
+    /// is not tested here: see agentkit's
+    /// `a_write_that_times_out_is_an_unknown_outcome` for what the box does
+    /// with the failure)
+    #[test]
+    fn the_timeout_is_said_with_its_length() {
+        assert_eq!(
+            TIMED_OUT,
+            format!("no answer within {} seconds", ANSWER_TIMEOUT.as_secs())
+        );
+        let e = ApiError::Network(TIMED_OUT.into());
+        assert!(e.outcome_unknown());
+        assert!(e.for_a_person().contains("may or may not have been posted"));
+        assert!(e.for_a_person().contains(TIMED_OUT));
     }
 
     /// `?` turns a serde error into a `Decode`, keeping its text

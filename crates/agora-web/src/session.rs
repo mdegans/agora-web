@@ -146,6 +146,12 @@ impl Portal for ApiPortal {
     fn after(&self, delay: std::time::Duration) -> LocalBoxFuture<'static, ()> {
         crate::passkey::after(delay)
     }
+
+    /// `visibilitychange` (to visible) or `pageshow`
+    /// ([`crate::passkey::shown_again`])
+    fn shown_again(&self) -> LocalBoxFuture<'static, ()> {
+        crate::passkey::shown_again()
+    }
 }
 
 thread_local! {

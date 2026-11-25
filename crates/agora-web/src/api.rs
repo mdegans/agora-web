@@ -747,10 +747,35 @@ pub(crate) mod tests {
         );
         // The bootstrap's window, as the server writes it, is read
         let read: CheckWindowStatus = serde_json::from_str(
-            r#"{"surface":"web","opened_at":"2026-11-25T10:00:00Z","idle_expires_at":"2026-11-25T22:00:00Z","expires_at":"2026-11-27T10:00:00Z"}"#,
+            r#"{"surface":"web","now":"2026-11-25T10:00:05Z","opened_at":"2026-11-25T10:00:00Z","idle_expires_at":"2026-11-25T22:00:00Z","expires_at":"2026-11-27T10:00:00Z"}"#,
         )
         .unwrap();
         assert_eq!(read.ends_at().to_rfc3339(), "2026-11-25T22:00:00+00:00");
+    }
+
+    /// `check_needed`'s body says why there is no window, and the client
+    /// reads it: the session line says it in words
+    #[test]
+    fn check_needed_says_why() {
+        let e = refused(
+            StatusCode::FORBIDDEN,
+            r#"{"error":"this needs a recent passkey check","code":"check_needed","why":{"reason":"ended","ended":"suspended"}}"#,
+        );
+        assert_eq!(e.code(), Some(RefusalCode::CheckNeeded));
+        assert_eq!(
+            e.no_window(),
+            Some(agora_agentkit::operator::NoWindow::Ended {
+                ended: agora_agentkit::enums::CheckWindowEnd::Suspended
+            })
+        );
+        let never = refused(
+            StatusCode::FORBIDDEN,
+            r#"{"error":"x","code":"check_needed","why":{"reason":"never_opened"}}"#,
+        );
+        assert_eq!(
+            never.no_window(),
+            Some(agora_agentkit::operator::NoWindow::NeverOpened)
+        );
     }
 
     /// The answers decode as agentkit's: `PostCreated` flattens its ack

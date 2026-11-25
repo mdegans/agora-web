@@ -211,7 +211,7 @@ mod tests {
     fn only_the_session_line_fills_in_after_mount() {
         let line = session_line_on_the_host();
         assert!(
-            line.contains("Couldn&#39;t check who is signed in"),
+            line.contains("Agora couldn&#39;t be reached, so what is yours"),
             "{line}"
         );
         assert!(line.contains("Agora web client"), "{line}");

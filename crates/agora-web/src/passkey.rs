@@ -321,11 +321,23 @@ mod wasm {
             );
             return;
         };
-        let wake = Closure::<dyn Fn(JsValue)>::new(|_event: JsValue| {
+        let wake = Closure::<dyn Fn(JsValue)>::new(|event: JsValue| {
             let hidden = web_sys::window()
                 .and_then(|w| w.document())
                 .is_some_and(|d| d.hidden());
             if hidden {
+                return;
+            }
+            // A `pageshow` counts only for a page restored from the
+            // back-forward cache (`persisted`): a fresh load asks anyway
+            let kind = Reflect::get(&event, &"type".into())
+                .ok()
+                .and_then(|t| t.as_string());
+            if kind.as_deref() == Some("pageshow")
+                && !Reflect::get(&event, &"persisted".into())
+                    .ok()
+                    .is_some_and(|p| p.is_truthy())
+            {
                 return;
             }
             let waiting = WAITING.with(|w| std::mem::take(&mut *w.borrow_mut()));

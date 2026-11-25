@@ -45,6 +45,31 @@ pub fn get(
     }
 }
 
+/// A future ready `delay` from now: the browser's `setTimeout`, awaited
+/// as this module awaits the prompt's promise. agentkit's session waits
+/// with it for a check window's end, to ask the server then. Off the
+/// browser (the host tests), a wait that never ends
+pub fn after(delay: std::time::Duration) -> LocalBoxFuture<'static, ()> {
+    #[cfg(target_arch = "wasm32")]
+    return wasm::after(delay);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = delay;
+        Box::pin(std::future::pending())
+    }
+}
+
+/// A future ready the next time the page is shown again: the tab brought
+/// back (`visibilitychange` with the document no longer hidden) or the page
+/// restored from the back-forward cache (`pageshow`). agentkit's session
+/// asks the server about its check window then. Off the browser, never
+pub fn shown_again() -> LocalBoxFuture<'static, ()> {
+    #[cfg(target_arch = "wasm32")]
+    return wasm::shown_again();
+    #[cfg(not(target_arch = "wasm32"))]
+    Box::pin(std::future::pending())
+}
+
 /// base64url (RFC 4648 §5, no padding, as WebAuthn's JSON writes it) to
 /// bytes; `None` for text that isn't: a character outside the alphabet
 /// (`+` and `/`, standard base64's, included), padding, a length no
@@ -234,6 +259,118 @@ mod wasm {
     };
 
     use super::{Answer, LocalBoxFuture, RequestBinary};
+
+    /// See [`super::after`]. `setTimeout` takes a signed 32-bit count of
+    /// milliseconds; agentkit never asks for more than 20 days
+    pub fn after(delay: std::time::Duration) -> LocalBoxFuture<'static, ()> {
+        let ms = i32::try_from(delay.as_millis()).unwrap_or(i32::MAX);
+        let promise = Promise::new(&mut |resolve: Function, _reject: Function| {
+            let set = web_sys::window().map(|window| {
+                window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+            });
+            match set {
+                Some(Ok(_)) => {}
+                Some(Err(e)) => web_sys::console::warn_2(
+                    &"agora-web: no timer, so a check window's end is learned from a refusal only:"
+                        .into(),
+                    &e,
+                ),
+                None => web_sys::console::warn_1(
+                    &"agora-web: no window, so a check window's end is learned from a refusal only"
+                        .into(),
+                ),
+            }
+        });
+        Box::pin(async move {
+            // A timer's promise only resolves
+            let _ = Settled::new(promise).await;
+        })
+    }
+
+    thread_local! {
+        /// The promises waiting for the page to be shown again
+        static WAITING: RefCell<Vec<Function>> = const { RefCell::new(Vec::new()) };
+        /// The two listeners are on (once per page)
+        static LISTENING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    }
+
+    /// See [`super::shown_again`]
+    pub fn shown_again() -> LocalBoxFuture<'static, ()> {
+        listen_for_shown();
+        let promise = Promise::new(&mut |resolve: Function, _reject: Function| {
+            WAITING.with(|w| w.borrow_mut().push(resolve));
+        });
+        Box::pin(async move {
+            // It only resolves
+            let _ = Settled::new(promise).await;
+        })
+    }
+
+    /// Puts the `visibilitychange` and `pageshow` listeners on, once: each
+    /// wakes every waiting promise when the document isn't hidden. Warned
+    /// on the console when they can't be, so a failure isn't silent (the
+    /// page then learns of its window from the timer and refusals only)
+    fn listen_for_shown() {
+        if LISTENING.with(|l| l.replace(true)) {
+            return;
+        }
+        let Some(window) = web_sys::window() else {
+            web_sys::console::warn_1(
+                &"agora-web: no window, so a page shown again doesn't ask about its check window"
+                    .into(),
+            );
+            return;
+        };
+        let wake = Closure::<dyn Fn(JsValue)>::new(|event: JsValue| {
+            let hidden = web_sys::window()
+                .and_then(|w| w.document())
+                .is_some_and(|d| d.hidden());
+            if hidden {
+                return;
+            }
+            // A `pageshow` counts only for a page restored from the
+            // back-forward cache (`persisted`): a fresh load asks anyway
+            let kind = Reflect::get(&event, &"type".into())
+                .ok()
+                .and_then(|t| t.as_string());
+            if kind.as_deref() == Some("pageshow")
+                && !Reflect::get(&event, &"persisted".into())
+                    .ok()
+                    .is_some_and(|p| p.is_truthy())
+            {
+                return;
+            }
+            let waiting = WAITING.with(|w| std::mem::take(&mut *w.borrow_mut()));
+            for resolve in waiting {
+                if let Err(e) = resolve.call0(&JsValue::NULL) {
+                    web_sys::console::warn_2(
+                        &"agora-web: a wait for the page shown again failed:".into(),
+                        &e,
+                    );
+                }
+            }
+        });
+        let on = |target: &web_sys::EventTarget, event: &str| {
+            if let Err(e) =
+                target.add_event_listener_with_callback(event, wake.as_ref().unchecked_ref())
+            {
+                web_sys::console::warn_2(
+                    &format!("agora-web: no {event} listener, so a page shown again may not ask about its check window:").into(),
+                    &e,
+                );
+            }
+        };
+        on(&window, "pageshow");
+        match window.document() {
+            Some(document) => on(&document, "visibilitychange"),
+            None => web_sys::console::warn_1(
+                &"agora-web: no document, so a tab brought back doesn't ask about its check window"
+                    .into(),
+            ),
+        }
+        // The page's whole life: never removed
+        wake.forget();
+    }
 
     /// See [`super::get`]: the prompt is opened here, synchronously
     pub fn get(

@@ -128,6 +128,10 @@ impl Portal for ApiPortal {
         crate::passkey::get(options)
     }
 
+    fn window_status(&self) -> LocalBoxFuture<'static, Result<CheckWindowStatus, ApiError>> {
+        Box::pin(api::window_status())
+    }
+
     fn window_tap(&self) -> LocalBoxFuture<'static, Result<PortalWindowTap, ApiError>> {
         Box::pin(api::window_tap())
     }
@@ -228,7 +232,7 @@ pub fn SignedInMark() -> dioxus::prelude::Element {
     use_effect(move || {
         let Some(handle) = session else { return };
         match handle.get() {
-            Session::SignedIn(_) | Session::CheckNeeded => mark_signed_in(true),
+            Session::SignedIn(_) | Session::CheckNeeded(_) => mark_signed_in(true),
             Session::SignedOut => mark_signed_in(false),
             Session::Loading | Session::Failed(_) => {}
         }

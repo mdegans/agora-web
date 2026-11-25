@@ -11,7 +11,7 @@
 //! The endpoint functions ([`feed`], [`communities`], [`thread`],
 //! [`comment`], [`portal_session`], [`create_post`], [`create_comment`],
 //! [`inbox`], [`friends`], [`mark_read`], [`friendship`], [`message_tap`],
-//! [`send_message`], [`window_tap`], [`open_window`])
+//! [`send_message`], [`window_status`], [`window_tap`], [`open_window`])
 //! are short wrappers that name the path and the
 //! types. The portal's routes are authenticated by the portal's session
 //! cookie, which the browser sends on a same-origin request.
@@ -89,8 +89,9 @@ const PORTAL_MESSAGES: &str = "/agora/api/portal/poster/messages";
 /// tap that opens a check window (0x15), for a session outside one
 const PORTAL_WINDOW_TAP: &str = "/agora/api/portal/window/tap";
 
-/// `POST /api/portal/window` (`portal_api::handlers::open_window`): the
-/// tap's answer, which opens the window
+/// `GET /api/portal/window` (`portal_api::handlers::window_status`): whether
+/// the session's window is open, never counted as a use; and `POST` there
+/// (`portal_api::handlers::open_window`): the tap's answer, which opens it
 const PORTAL_WINDOW: &str = "/agora/api/portal/window";
 
 /// The one client every request is made with.
@@ -397,6 +398,14 @@ pub async fn send_message(
     request: &PortalMessageRequest,
 ) -> Result<SendMessageResponse, ApiError> {
     post(session, PORTAL_MESSAGES, request).await
+}
+
+/// Whether this session's check window is open, by the server's clock: its
+/// status (with the server's `now`), or the 403 `check_needed` saying why
+/// not. A `GET` with the session's cookie; never counts as a use of the
+/// window, so asking at its expected end can't keep it open
+pub async fn window_status() -> Result<CheckWindowStatus, ApiError> {
+    get(PORTAL_WINDOW, &()).await
 }
 
 /// The tap that opens a check window for this session from this network:

@@ -11,10 +11,16 @@
 //! The endpoint functions ([`feed`], [`communities`], [`thread`],
 //! [`comment`], [`portal_session`], [`create_post`], [`create_comment`],
 //! [`inbox`], [`friends`], [`mark_read`], [`friendship`], [`message_tap`],
-//! [`send_message`])
+//! [`send_message`], [`window_tap`], [`open_window`])
 //! are short wrappers that name the path and the
 //! types. The portal's routes are authenticated by the portal's session
 //! cookie, which the browser sends on a same-origin request.
+//!
+//! The check window's two routes ([`window_tap`], [`open_window`]) are the
+//! portal's only writes without the CSRF token ([`post_without_token`]): the
+//! token comes with the bootstrap, which a session outside its window is
+//! refused, so the page may have none. The server takes the page's
+//! `Origin` instead, which the browser sets on a same-origin `POST`.
 
 use std::{sync::LazyLock, time::Duration};
 
@@ -22,9 +28,9 @@ use agora_agentkit::{
     errors::ApiErrorBody,
     ids::{CommentId, PostId},
     operator::{
-        CSRF_HEADER, PortalCommentRequest, PortalFriendshipRequest, PortalMarkReadRequest,
-        PortalMarkReadResponse, PortalMessageRequest, PortalMessageTap, PortalPostRequest,
-        PortalSessionResponse,
+        CSRF_HEADER, CheckWindowStatus, PortalCommentRequest, PortalFriendshipRequest,
+        PortalMarkReadRequest, PortalMarkReadResponse, PortalMessageRequest, PortalMessageTap,
+        PortalPostRequest, PortalSessionResponse, PortalWindowOpenRequest, PortalWindowTap,
     },
     requests::{GetContentInput, GetFeedInput},
     responses::{
@@ -78,6 +84,14 @@ const PORTAL_MESSAGE_TAP: &str = "/agora/api/portal/poster/messages/tap";
 
 /// `POST /api/portal/poster/messages` (`portal_api::handlers::message`)
 const PORTAL_MESSAGES: &str = "/agora/api/portal/poster/messages";
+
+/// `POST /api/portal/window/tap` (`portal_api::handlers::window_tap`): the
+/// tap that opens a check window (0x15), for a session outside one
+const PORTAL_WINDOW_TAP: &str = "/agora/api/portal/window/tap";
+
+/// `POST /api/portal/window` (`portal_api::handlers::open_window`): the
+/// tap's answer, which opens the window
+const PORTAL_WINDOW: &str = "/agora/api/portal/window";
 
 /// The one client every request is made with.
 ///
@@ -192,6 +206,31 @@ where
     T: DeserializeOwned,
 {
     send(write_request(session, endpoint(path)?, body)?).await
+}
+
+/// `POST path`, with `body` as JSON when there is one, and no CSRF token:
+/// the check window's two routes only, which take the session's cookie and
+/// the page's `Origin` (the module's docs say why)
+async fn post_without_token<B, T>(path: &str, body: Option<&B>) -> Result<T, ApiError>
+where
+    B: Serialize + ?Sized,
+    T: DeserializeOwned,
+{
+    send(bare_request(endpoint(path)?, body)?).await
+}
+
+/// The request [`post_without_token`] sends
+fn bare_request<B: Serialize + ?Sized>(
+    url: Url,
+    body: Option<&B>,
+) -> Result<reqwest::RequestBuilder, ApiError> {
+    let request = CLIENT.post(url);
+    Ok(match body {
+        Some(body) => request
+            .header(CONTENT_TYPE, "application/json")
+            .body(serde_json::to_vec(body)?),
+        None => request,
+    })
 }
 
 /// The request [`post`] sends
@@ -358,6 +397,19 @@ pub async fn send_message(
     request: &PortalMessageRequest,
 ) -> Result<SendMessageResponse, ApiError> {
     post(session, PORTAL_MESSAGES, request).await
+}
+
+/// The tap that opens a check window for this session from this network:
+/// the options for the browser's prompt. A session outside its window
+/// asks for it (every other portal route refuses it with `check_needed`)
+pub async fn window_tap() -> Result<PortalWindowTap, ApiError> {
+    post_without_token::<(), _>(PORTAL_WINDOW_TAP, None).await
+}
+
+/// The tap's answer: the window opens, from the same network as the start
+/// (`network_changed` otherwise)
+pub async fn open_window(request: &PortalWindowOpenRequest) -> Result<CheckWindowStatus, ApiError> {
+    post_without_token(PORTAL_WINDOW, Some(request)).await
 }
 
 #[cfg(test)]
@@ -634,6 +686,7 @@ pub(crate) mod tests {
             csrf_token: CsrfToken("tok-123".into()),
             poster: None,
             suspension: None,
+            window: agora_agentkit::fixtures::portal_session(false).window,
         };
         let sent = r#"{"action_id":"0c4bd4a4-8f3d-4f3a-9f50-6d1f4f9b2a10","payload":{"reply_to":"7ad26ccd","body":"b"}}"#;
         let request: PortalCommentRequest = serde_json::from_str(sent).unwrap();
@@ -660,6 +713,44 @@ pub(crate) mod tests {
         let post = r#"{"action_id":"0c4bd4a4-8f3d-4f3a-9f50-6d1f4f9b2a10","payload":{"title":"t","body":"b","community":"general"}}"#;
         let request: PortalPostRequest = serde_json::from_str(post).unwrap();
         assert_eq!(request.payload.title, "t");
+    }
+
+    /// The check window's two routes carry no CSRF token (the bootstrap,
+    /// which brings it, is refused outside a window): the tap's start no
+    /// body, the finish the browser's answer
+    #[test]
+    fn the_windows_routes_carry_no_token() {
+        let base = Url::parse("https://agora.invalid").unwrap();
+        let start = bare_request::<()>(base.join(PORTAL_WINDOW_TAP).unwrap(), None)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(start.method(), reqwest::Method::POST);
+        assert_eq!(
+            start.url().as_str(),
+            "https://agora.invalid/agora/api/portal/window/tap"
+        );
+        assert!(start.headers().get(CSRF_HEADER).is_none());
+        assert!(start.body().is_none());
+        let answer = PortalWindowOpenRequest {
+            assertion: serde_json::from_str(r#"{"id":"a2V5","type":"public-key"}"#).unwrap(),
+        };
+        let finish = bare_request(base.join(PORTAL_WINDOW).unwrap(), Some(&answer))
+            .unwrap()
+            .build()
+            .unwrap();
+        assert!(finish.headers().get(CSRF_HEADER).is_none());
+        assert_eq!(finish.headers()[CONTENT_TYPE], "application/json");
+        assert_eq!(
+            finish.body().and_then(reqwest::Body::as_bytes),
+            Some(br#"{"assertion":{"id":"a2V5","type":"public-key"}}"#.as_slice())
+        );
+        // The bootstrap's window, as the server writes it, is read
+        let read: CheckWindowStatus = serde_json::from_str(
+            r#"{"surface":"web","opened_at":"2026-11-25T10:00:00Z","idle_expires_at":"2026-11-25T22:00:00Z","expires_at":"2026-11-27T10:00:00Z"}"#,
+        )
+        .unwrap();
+        assert_eq!(read.ends_at().to_rfc3339(), "2026-11-25T22:00:00+00:00");
     }
 
     /// The answers decode as agentkit's: `PostCreated` flattens its ack

@@ -11,9 +11,9 @@
 use agora_agentkit::{
     ids::CommentId,
     operator::{
-        PortalCommentRequest, PortalFriendshipRequest, PortalMarkReadRequest,
+        CheckWindowStatus, PortalCommentRequest, PortalFriendshipRequest, PortalMarkReadRequest,
         PortalMarkReadResponse, PortalMessageRequest, PortalMessageTap, PortalPostRequest,
-        PortalSessionResponse,
+        PortalSessionResponse, PortalWindowOpenRequest, PortalWindowTap,
     },
     responses::{
         CommunityResponse, FriendsResponse, InboxResponse, PostCreated, SendMessageResponse,
@@ -127,6 +127,25 @@ impl Portal for ApiPortal {
     ) -> LocalBoxFuture<'static, Result<serde_json::Value, TapFailed>> {
         crate::passkey::get(options)
     }
+
+    fn window_tap(&self) -> LocalBoxFuture<'static, Result<PortalWindowTap, ApiError>> {
+        Box::pin(api::window_tap())
+    }
+
+    fn open_window(
+        &self,
+        request: &PortalWindowOpenRequest,
+    ) -> LocalBoxFuture<'static, Result<CheckWindowStatus, ApiError>> {
+        let request = request.clone();
+        Box::pin(async move { api::open_window(&request).await })
+    }
+
+    /// `setTimeout` ([`crate::passkey::after`]); off the browser (the host
+    /// tests) a wait that never ends, so the page learns of a window's end
+    /// from a refusal only
+    fn after(&self, delay: std::time::Duration) -> LocalBoxFuture<'static, ()> {
+        crate::passkey::after(delay)
+    }
 }
 
 thread_local! {
@@ -191,8 +210,10 @@ pub const SIGNED_IN_ATTRIBUTE: &str = "data-signed-in";
 /// Marks the document while the session is signed in, and unmarks it on
 /// sign-out ([`SIGNED_IN_ATTRIBUTE`]). Draws nothing; in the client's
 /// session slot, so never in the first render (hydration matches), and the
-/// mark is set in an effect, after the session read. Unknown (loading, or
-/// a failed read) leaves the mark as it is
+/// mark is set in an effect, after the session read. A session outside its
+/// check window is still signed in (only a passkey check away), so it
+/// keeps the mark. Unknown (loading, or a failed read) leaves the mark as
+/// it is
 #[allow(non_snake_case)]
 pub fn SignedInMark() -> dioxus::prelude::Element {
     use agora_agentkit::ui::session::{Session, try_use_session};
@@ -201,7 +222,7 @@ pub fn SignedInMark() -> dioxus::prelude::Element {
     use_effect(move || {
         let Some(handle) = session else { return };
         match handle.get() {
-            Session::SignedIn(_) => mark_signed_in(true),
+            Session::SignedIn(_) | Session::CheckNeeded => mark_signed_in(true),
             Session::SignedOut => mark_signed_in(false),
             Session::Loading | Session::Failed(_) => {}
         }

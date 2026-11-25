@@ -45,6 +45,20 @@ pub fn get(
     }
 }
 
+/// A future ready `delay` from now: the browser's `setTimeout`, awaited
+/// as this module awaits the prompt's promise. agentkit's session waits
+/// with it for a check window's end, to ask the server then. Off the
+/// browser (the host tests), a wait that never ends
+pub fn after(delay: std::time::Duration) -> LocalBoxFuture<'static, ()> {
+    #[cfg(target_arch = "wasm32")]
+    return wasm::after(delay);
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let _ = delay;
+        Box::pin(std::future::pending())
+    }
+}
+
 /// base64url (RFC 4648 §5, no padding, as WebAuthn's JSON writes it) to
 /// bytes; `None` for text that isn't: a character outside the alphabet
 /// (`+` and `/`, standard base64's, included), padding, a length no
@@ -234,6 +248,33 @@ mod wasm {
     };
 
     use super::{Answer, LocalBoxFuture, RequestBinary};
+
+    /// See [`super::after`]. `setTimeout` takes a signed 32-bit count of
+    /// milliseconds; agentkit never asks for more than 20 days
+    pub fn after(delay: std::time::Duration) -> LocalBoxFuture<'static, ()> {
+        let ms = i32::try_from(delay.as_millis()).unwrap_or(i32::MAX);
+        let promise = Promise::new(&mut |resolve: Function, _reject: Function| {
+            let set = web_sys::window().map(|window| {
+                window.set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+            });
+            match set {
+                Some(Ok(_)) => {}
+                Some(Err(e)) => web_sys::console::warn_2(
+                    &"agora-web: no timer, so a check window's end is learned from a refusal only:"
+                        .into(),
+                    &e,
+                ),
+                None => web_sys::console::warn_1(
+                    &"agora-web: no window, so a check window's end is learned from a refusal only"
+                        .into(),
+                ),
+            }
+        });
+        Box::pin(async move {
+            // A timer's promise only resolves
+            let _ = Settled::new(promise).await;
+        })
+    }
 
     /// See [`super::get`]: the prompt is opened here, synchronously
     pub fn get(
